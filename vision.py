@@ -172,10 +172,10 @@ AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
 
 # ---- Listening ----
-WAKE_LISTEN_TIMEOUT = 4
-WAKE_PHRASE_TIME = 3
-COMMAND_LISTEN_TIMEOUT = 4
-COMMAND_PHRASE_TIME = 8
+WAKE_LISTEN_TIMEOUT = 5
+WAKE_PHRASE_TIME = 4
+COMMAND_LISTEN_TIMEOUT = 6
+COMMAND_PHRASE_TIME = 10
 MAX_AUDIO_FAILURES = 3
 CALIBRATION_INTERVAL = 120
 WAKE_PHRASES = ["hey vision", "hey visions", "a vision", "hey vishon", "hey vizhan"]
@@ -252,11 +252,13 @@ def get_microphone():
 
 def create_recognizer():
     r = sr.Recognizer()
-    r.pause_threshold = float(CONFIG.get("pause_threshold", 0.5))
-    r.phrase_threshold = float(CONFIG.get("phrase_threshold", 0.2))
-    r.non_speaking_duration = float(CONFIG.get("non_speaking_duration", 0.3))
-    r.energy_threshold = int(CONFIG.get("energy_threshold", 150))
+    r.pause_threshold = float(CONFIG.get("pause_threshold", 0.85))
+    r.phrase_threshold = float(CONFIG.get("phrase_threshold", 0.25))
+    r.non_speaking_duration = float(CONFIG.get("non_speaking_duration", 0.5))
+    r.energy_threshold = int(CONFIG.get("energy_threshold", 55))
     r.dynamic_energy_threshold = True
+    r.dynamic_energy_adjustment_damping = 0.15
+    r.dynamic_energy_ratio = 1.5
     return r
 
 
@@ -272,8 +274,8 @@ def calibrate_microphone_once(force=False):
         print("Calibrating microphone for ambient noise...")
         with audio_lock:
             with get_microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.8)
-        recognizer.energy_threshold = max(80, min(250, recognizer.energy_threshold))
+                recognizer.adjust_for_ambient_noise(source, duration=0.9)
+        recognizer.energy_threshold = max(35, min(180, recognizer.energy_threshold * 1.25))
         last_calibration_time = time.time()
         print(f"Microphone calibrated (energy threshold {int(recognizer.energy_threshold)})")
     except Exception as e:
@@ -295,24 +297,34 @@ def note_audio_failure(reason):
         reset_audio_pipeline(reason)
 
 
-def safe_listen(timeout=5, phrase_time=6, mode="command"):
-    """Open the microphone for one bounded listen cycle, then release it."""
+def safe_listen(timeout=6, phrase_time=10, mode="command"):
+    """Open the microphone for one bounded listen cycle with multi-accent recognition fallback."""
     try:
         with audio_lock:
             with get_microphone() as source:
                 print(f"Listening ({mode})...")
                 audio = recognizer.listen(source, timeout=max(1, int(timeout)),
                                           phrase_time_limit=max(1, int(phrase_time)))
-        text = recognizer.recognize_google(audio, language="en-IN").strip()
+        # Dual-pass recognition: primary en-IN, fallback en-US
+        text = ""
+        try:
+            text = recognizer.recognize_google(audio, language="en-IN").strip()
+        except sr.UnknownValueError:
+            try:
+                text = recognizer.recognize_google(audio, language="en-US").strip()
+            except sr.UnknownValueError:
+                text = ""
+
         if text:
             global audio_failure_count
             audio_failure_count = 0
             print(f"Heard ({mode}): {text}")
-        return text
+            return text
+        else:
+            note_audio_failure("speech was not understood")
+            return ""
     except sr.WaitTimeoutError:
         return ""
-    except sr.UnknownValueError:
-        note_audio_failure("speech was not understood")
     except sr.RequestError as e:
         note_audio_failure(f"recognition service error: {e}")
     except OSError as e:
@@ -1427,13 +1439,19 @@ def execute_intent(intent, args, original_command):
         reply = get_startup_status()
         speak(reply)
 
-    # Speech Control & Barge-in
+    # Speech Control & Barge-in / Stop
     elif intent == "tts_stop":
-        trigger_barge_in()
-        set_vision_state("interrupted")
-        time.sleep(0.15)
-        set_vision_state("listening")
-        return ""
+        if tts_manager.is_playing.is_set():
+            trigger_barge_in()
+            set_vision_state("interrupted")
+            time.sleep(0.15)
+            set_vision_state("listening")
+            return ""
+        else:
+            reply = "Understood Sir. Entering standby mode. Say Hey Vision or clap twice to activate me."
+            speak(reply)
+            exit_active_mode()
+            return reply
 
     elif intent == "tts_repeat":
         last = context.last_spoken_reply
@@ -1472,7 +1490,7 @@ def execute_intent(intent, args, original_command):
         speak(reply)
 
     elif intent == "sleep":
-        reply = "Understood Sir. Going to sleep. Say Hey Vision to wake me up."
+        reply = "Understood Sir. Entering standby mode. Say Hey Vision or clap twice to wake me up."
         speak(reply)
         exit_active_mode()
 

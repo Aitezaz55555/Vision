@@ -105,7 +105,7 @@ PATTERNS = [
     ("brightness_down", re.compile(r"\b(?:decrease brightness|brightness down|screen brightness down|dim screen|dim the screen)\b", re.I)),
 
     # Sleep / Idle
-    ("sleep", re.compile(r"\b(?:go to sleep|sleep mode|sleep now|stop listening|so jao|chup ho jao|take a break)\b", re.I)),
+    ("sleep", re.compile(r"\b(?:go to sleep|sleep mode|sleep now|stop listening|so jao|chup ho jao|take a break|standby|enter standby)\b", re.I)),
     ("stop", re.compile(r"\b(?:(?:stop|exit|quit|terminate|band karo)\s+vision|goodbye vision|vision goodbye)\b", re.I)),
 
     # Personal Memory

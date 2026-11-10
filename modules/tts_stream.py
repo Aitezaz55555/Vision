@@ -29,6 +29,12 @@ try:
 except Exception:
     HAS_EDGE = False
 
+try:
+    import speech_recognition as sr
+    HAS_SR = True
+except Exception:
+    HAS_SR = False
+
 from modules.sound import play_interrupt_cue
 
 
@@ -42,10 +48,11 @@ ABBREVIATIONS = {
 
 # Barge-in keywords that immediately halt assistant speech
 BARGE_IN_KEYWORDS = {
-    "stop", "be quiet", "stop speaking", "cancel", "enough", "pause",
+    "stop", "be quiet", "stop speaking", "stop talking", "cancel", "enough", "pause",
     "quiet", "shut up", "shutup", "that's enough", "thats enough",
     "stop it", "stop now", "listen", "continue", "ruk jao", "ruko",
-    "chup", "chup raho", "chup ho jao", "bas karo", "bas"
+    "chup", "chup raho", "chup ho jao", "bas karo", "bas",
+    "halt", "silence", "shh", "shhh", "stopp", "top", "hold on", "wait", "exit", "quit"
 }
 
 
@@ -287,45 +294,86 @@ class StreamingTTSManager:
         self._cleanup_all_temp_files()
 
     def _keyboard_monitor(self):
-        """Non-blocking keyboard listener thread for ESC, SPACE, 'S', 'Q', ENTER."""
+        """Global non-blocking keyboard listener thread for ESC, SPACE, 'S', 'Q', ENTER."""
         if not sys.platform.startswith("win"):
             return
         try:
             import msvcrt
+            import ctypes
+            user32 = ctypes.windll.user32
+            # VK_ESCAPE (0x1B), VK_SPACE (0x20), 'S' (0x53), 'Q' (0x51)
+            VK_STOP_KEYS = (0x1B, 0x20, 0x53, 0x51)
+
             while self.is_playing.is_set() and not self.cancel_event.is_set():
+                # Global Windows keyboard state (works across all windows/apps)
+                for vk in VK_STOP_KEYS:
+                    if user32.GetAsyncKeyState(vk) & 0x8000:
+                        self.interrupt(reason=f"global key press (0x{vk:02X})")
+                        return
+
                 if msvcrt.kbhit():
                     ch = msvcrt.getch()
-                    # ESC (27), SPACE (32), 's' (115), 'S' (83), ENTER (13), 'q' (113)
                     if ch in (b'\x1b', b' ', b's', b'S', b'\r', b'q', b'Q'):
-                        self.interrupt(reason="keyboard key press")
+                        self.interrupt(reason="console key press")
                         return
-                time.sleep(0.025)
+
+                time.sleep(0.02)
         except Exception:
             pass
 
     def _voice_monitor(self):
         """Background listener thread monitoring for spoken barge-in keywords during speech."""
-        if not self.microphone_factory or not self.recognizer_factory:
+        if not HAS_SR or not self.microphone_factory or not self.recognizer_factory:
             return
         try:
             recognizer = self.recognizer_factory()
-            recognizer.pause_threshold = 0.25
+            recognizer.pause_threshold = 0.3
             recognizer.phrase_threshold = 0.15
             recognizer.non_speaking_duration = 0.2
+            recognizer.dynamic_energy_threshold = False
+
+            # Duck pygame mixer volume slightly so mic can hear user voice over speakers
+            if HAS_PYGAME and pygame.mixer.get_init():
+                try:
+                    pygame.mixer.music.set_volume(0.8)
+                except Exception:
+                    pass
 
             with self.microphone_factory() as source:
+                # Fast calibration of ambient noise
+                try:
+                    recognizer.adjust_for_ambient_noise(source, duration=0.25)
+                    recognizer.energy_threshold = max(40, min(160, recognizer.energy_threshold * 1.25))
+                except Exception:
+                    recognizer.energy_threshold = 55
+
                 while self.is_playing.is_set() and not self.cancel_event.is_set():
                     try:
-                        # Listen in very short 0.7s windows
-                        audio = recognizer.listen(source, timeout=0.5, phrase_time_limit=1.2)
-                        heard = recognizer.recognize_google(audio, language="en-IN").strip().lower()
-                        if any(k in heard for k in BARGE_IN_KEYWORDS):
-                            self.interrupt(reason=f"voice keyword '{heard}'")
+                        audio = recognizer.listen(source, timeout=0.6, phrase_time_limit=1.5)
+                        if self.cancel_event.is_set():
                             return
+
+                        # Dual-pass recognition for barge-in: primary en-IN, fallback en-US
+                        heard = ""
+                        try:
+                            heard = recognizer.recognize_google(audio, language="en-IN").strip().lower()
+                        except Exception:
+                            try:
+                                heard = recognizer.recognize_google(audio, language="en-US").strip().lower()
+                            except Exception:
+                                heard = ""
+
+                        if heard:
+                            print(f"\n[Barge-In Monitor] Heard during speech: '{heard}'")
+                            if any(k in heard for k in BARGE_IN_KEYWORDS):
+                                self.interrupt(reason=f"voice keyword '{heard}'")
+                                return
+                    except sr.WaitTimeoutError:
+                        continue
                     except Exception:
                         continue
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[StreamingTTS] Voice monitor note: {e}")
 
     def _play_single_file(self, filepath: str) -> bool:
         """

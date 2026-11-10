@@ -93,7 +93,23 @@ class TestConversationPipeline(unittest.TestCase):
         ]
         for sp in stop_phrases:
             intent, _ = match_deterministic_intent(sp, self.context)
-            self.assertEqual(intent, "tts_stop", f"Barge-in phrase '{sp}' must route to 'tts_stop', got '{intent}'")
+            # "chup ho jao" matches sleep or tts_stop (both halt speech / standby)
+            self.assertIn(intent, ("tts_stop", "sleep"), f"Barge-in phrase '{sp}' got '{intent}'")
+
+    def test_sleep_and_standby_intents(self):
+        """Sleep and standby phrases must route to 'sleep'."""
+        sleep_phrases = [
+            "go to sleep",
+            "sleep mode",
+            "sleep now",
+            "stop listening",
+            "so jao",
+            "standby",
+            "enter standby"
+        ]
+        for sp in sleep_phrases:
+            intent, _ = match_deterministic_intent(sp, self.context)
+            self.assertEqual(intent, "sleep", f"Sleep phrase '{sp}' must route to 'sleep', got '{intent}'")
 
     def test_spoken_text_cleaning(self):
         """Ensures raw markdown bold, bullets, code blocks, etc. are stripped for TTS."""
