@@ -52,36 +52,38 @@ def build_system_prompt(assistant_name: str = "Vision",
     """
     notes_str = "; ".join(notes[-5:]) if notes else "None"
     system_base = (
-        f"You are {assistant_name}, a highly intelligent, articulate, responsive and confident AI desktop assistant "
+        f"You are {assistant_name}, a highly intelligent, articulate, responsive, and natural conversational AI assistant "
         f"created by {creator_name}. Address the user respectfully as Sir.\n"
         f"User name: {user_name or 'Sir'}\n"
         f"Important user notes: {notes_str}\n\n"
-        "Core Directives:\n"
-        "1. You are a general-purpose AI assistant capable of answering questions across science, programming, "
-        "mathematics, computers, movies, anime, gaming, general knowledge, and casual conversations.\n"
-        "2. Explain difficult topics in simple, intuitive terms, using relatable real-world examples when helpful.\n"
-        "3. Maintain a futuristic, articulate, helpful and calm tone.\n"
-        "4. CRITICAL FOR AUDIO PLAYBACK: You are speaking aloud through a text-to-speech engine. "
-        "NEVER use markdown formatting, bold asterisks (**text**), bullet points (- item), numbered lists (1. item), "
-        "or markdown tables. Speak in smooth, natural, flowing sentences.\n"
+        "Core Conversational Directives:\n"
+        "1. You are a true general-purpose conversational AI. Answer questions thoroughly and naturally across "
+        "programming, computer science, mathematics, science, technology, history, general knowledge, storytelling, and casual conversation.\n"
+        "2. CONTEXT & FOLLOW-UPS: Pay close attention to previous dialogue turns. Understand when the user asks follow-up questions "
+        "such as 'Why?', 'Explain that again', 'Give me an example', 'Make it shorter', or 'How does that work?'. Connect your answers seamlessly.\n"
+        "3. EXPLANATIONS & EXAMPLES: When asked for an example, provide a concrete, illustrative example immediately. "
+        "When explaining technical or programming topics, break down concepts clearly and intuitively.\n"
+        "4. SPOKEN VOICE COMPLIANCE: Your responses are voiced aloud via text-to-speech. "
+        "NEVER output raw markdown bullet points (- item), asterisks (**bold**), or markdown tables. "
+        "Speak in smooth, natural, human-sounding sentences.\n"
     )
 
     if mode == "detailed":
         system_base += (
             "\nCurrent Mode: DETAILED EXPLANATION.\n"
-            "Provide a thorough, comprehensive, step-by-step explanation. Cover the core principles, "
-            "practical examples, and key insights. Maintain spoken sentence flow without bullet symbols."
+            "Provide a comprehensive, in-depth, step-by-step breakdown. "
+            "Cover core principles, practical examples, and underlying mechanics in clear spoken paragraphs."
         )
     elif mode == "entertainment":
         system_base += (
             "\nCurrent Mode: ENTERTAINMENT.\n"
-            "Deliver an engaging, creative story, a witty joke, or a fascinating fact with great storytelling flair."
+            "Deliver an engaging, creative story, a witty joke, a fascinating riddle, or a fun fact with personality and flair."
         )
     else:  # normal
         system_base += (
-            "\nCurrent Mode: CONVERSATIONAL ASSISTANT (Normal).\n"
-            "Deliver a concise, natural, direct spoken answer (typically 2 to 4 sentences). "
-            "Be clear and conversational. Offer to explain further if the user wants more depth."
+            "\nCurrent Mode: CONVERSATIONAL ASSISTANT.\n"
+            "Deliver an articulate, complete, and engaging response (3 to 6 sentences). "
+            "Directly answer the question, give context or examples when useful, and remain conversational."
         )
 
     return system_base
@@ -110,10 +112,10 @@ def prepare_chat_messages(user_prompt: str,
 
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
-    # 1. Inject recent turns from ConversationContext if available
+    # 1. Inject recent turns from ConversationContext (up to 6 turns for rich conversational memory)
     turns_injected = 0
     if hasattr(context, "turns") and context.turns:
-        for turn in context.turns[-4:]:
+        for turn in context.turns[-6:]:
             u = turn.get("user", "").strip()
             v = turn.get("vision", "").strip()
             if u and v:
@@ -124,7 +126,7 @@ def prepare_chat_messages(user_prompt: str,
     # 2. If context turns were empty, fallback to persistent memory conversation history
     if turns_injected == 0 and isinstance(memory, dict):
         hist = memory.get("last_conversation", [])
-        for item in hist[-3:]:
+        for item in hist[-4:]:
             if isinstance(item, dict) and "user" in item and "vision" in item:
                 messages.append({"role": "user", "content": item["user"]})
                 messages.append({"role": "assistant", "content": item["vision"]})
@@ -138,7 +140,7 @@ def prepare_chat_messages(user_prompt: str,
 def stream_ollama_tokens(ollama_client: Any,
                          model_name: str,
                          messages: List[Dict[str, str]],
-                         cancel_event: threading.Event,
+                         cancel_event: Optional[threading.Event] = None,
                          max_tokens: int = 350) -> Generator[str, None, None]:
     """
     Streams tokens from local Ollama chat API.
@@ -156,7 +158,7 @@ def stream_ollama_tokens(ollama_client: Any,
         )
 
         for chunk in response_stream:
-            if cancel_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
                 break
             content = chunk.get("message", {}).get("content", "")
             if content:

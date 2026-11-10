@@ -23,14 +23,37 @@ FILLER_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Conversational & Explanatory Intent Patterns
+CONVERSATIONAL_REGEX = re.compile(
+    r"^(?:what|who|where|when|why|how|which|whose|whom|"
+    r"explain|elaborate|describe|define|teach me|tell me|help me understand|"
+    r"can you (?:explain|tell|elaborate|clarify|solve|help)|could you (?:explain|tell|elaborate|clarify|solve|help)|"
+    r"give (?:me )?(?:an? )?example|show (?:me )?(?:an? )?example|another example|"
+    r"make it (?:shorter|simpler|brief|longer|detailed)|summarize|in simple terms|step by step|"
+    r"explain that again|tell me more|what about|how does (?:it|that|this) work|why is (?:it|that|this)|"
+    r"tell (?:me )?(?:a )?(?:story|joke|fact|riddle)|joke sunao|kahani sunao|"
+    r"hello|hi|hey|how are you|what's up|good morning|good evening|good afternoon|thank you|thanks|"
+    r"write (?:a )?(?:code|program|script|function|query|poem|essay)|"
+    r"difference between|compare|is it (?:true|possible)|can we|could we|solve|calculate)\b",
+    re.I
+)
+
+FOLLOW_UP_REGEX = re.compile(
+    r"^(?:why\??|how\??|what\??|why so\??|give (?:me )?(?:an? )?example|show (?:me )?(?:an? )?example|example|another one|"
+    r"explain (?:that|more|again|further)|tell me more|more|next|continue|go on|"
+    r"make it (?:shorter|simpler|brief|longer)|summarize|in simple terms|step by step|"
+    r"what else|can you elaborate|clarify|explain that again)\b",
+    re.I
+)
+
 # Deterministic regex patterns for Tier 1 matching
 PATTERNS = [
     # System Controls
     ("lock_workstation", re.compile(r"\b(?:lock (?:my )?(?:pc|computer|windows|screen)|lock screen|workstation lock)\b", re.I)),
     ("task_manager", re.compile(r"\b(?:open |launch |show )?(?:task manager|taskmgr|system processes)\b", re.I)),
     ("settings", re.compile(r"\b(?:open |launch |show )?(?:windows settings|system settings|pc settings|control panel)\b", re.I)),
-    ("battery", re.compile(r"\b(?:(?:check |what is |how is |show )?(?:my )?battery(?: status| level| percentage)?|battery kitni hai)\b", re.I)),
-    ("performance", re.compile(r"\b(?:(?:check |show |what is )?(?:cpu|ram|memory|system performance|hardware usage))\b", re.I)),
+    ("battery", re.compile(r"\b(?:(?:check |what is |how is |show )?(?:my )?battery(?: status| level| percentage)|battery level|battery status|battery percentage|battery kitni hai)\b", re.I)),
+    ("performance", re.compile(r"\b(?:(?:check |show |what is )?(?:my )?(?:cpu|ram|memory) (?:usage|utilization|performance|stats)|system performance|hardware usage)\b", re.I)),
     ("system_info", re.compile(r"\b(?:system info|system information|about this pc|pc specs|computer info)\b", re.I)),
     
     # Window Management
@@ -47,7 +70,7 @@ PATTERNS = [
     ("cancel_reminders", re.compile(r"\b(?:cancel (?:all )?reminders|clear reminders|delete reminders)\b", re.I)),
 
     # Speech Control & Barge-in
-    ("tts_stop", re.compile(r"^(?:stop(?:\s+speaking|\s+talking|\s+it|\s+now)?|be quiet|shut ?up|shutup|enough|that'?s enough|cancel|pause|ruk jao|ruko|chup(?:\s+raho|\s+ho\s+jao)?)$", re.I)),
+    ("tts_stop", re.compile(r"^(?:stop(?:\s+speaking|\s+talking|\s+it|\s+now)?|be quiet|shut ?up|shutup|enough|that'?s enough|cancel|pause|listen|continue|ruk jao|ruko|chup(?:\s+raho|\s+ho\s+jao)?)$", re.I)),
     ("tts_repeat", re.compile(r"\b(?:repeat that|what did you say|say that again|repeat|phir se bolo)\b", re.I)),
     ("tts_slower", re.compile(r"\b(?:speak slower|talk slower|slow down your voice|slower voice)\b", re.I)),
     ("tts_faster", re.compile(r"\b(?:speak faster|talk faster|speed up your voice|faster voice)\b", re.I)),
@@ -91,7 +114,6 @@ PATTERNS = [
     ("get_name", re.compile(r"\b(?:what is my name|who am i|mera naam kya hai|do you know my name)\b", re.I)),
     ("history", re.compile(r"\b(?:show (?:my )?history|conversation history|previous chat|purani baatein)\b", re.I)),
     ("clear_memory", re.compile(r"\b(?:clear (?:all )?memory|reset memory|wipe memory)\b", re.I)),
-    ("introduce", re.compile(r"\b(?:who are you|introduce yourself|tell me about yourself|apna introduction do)\b", re.I)),
 ]
 
 
@@ -104,6 +126,7 @@ def clean_text(text: str) -> str:
 def match_deterministic_intent(user_text: str, context: ConversationContext) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Tier 1: Evaluates fast deterministic rules against user text and current context.
+    Intelligently separates conversational questions from Windows PC actions.
     Returns (intent_name, args_dict).
     """
     raw = user_text.strip()
@@ -116,11 +139,20 @@ def match_deterministic_intent(user_text: str, context: ConversationContext) -> 
         if re.match(r"^(?:no|cancel|abort|stop|dont|don't|mat karo|nahi|nah)$", cmd):
             return "confirm_action", {"proceed": False}
 
-    # Check for complete Assistant Exit before filler stripping
+    # Complete Assistant Exit
     if re.search(r"\b(?:(?:stop|exit|quit|terminate|band karo)\s+vision|goodbye vision|vision goodbye)\b", raw, re.I):
         return "stop", {}
 
-    # 2. Check Set Volume or Brightness to Specific Number
+    # Immediate speech stop & barge-in
+    if re.match(r"^(?:stop(?:\s+speaking|\s+talking|\s+it|\s+now)?|be quiet|shut ?up|shutup|enough|that'?s enough|cancel|pause|listen|continue|ruk jao|ruko|chup(?:\s+raho|\s+ho\s+jao)?)$", cmd, re.I):
+        return "tts_stop", {}
+
+    # 2. Check standard system patterns (battery, performance, task manager, settings, time, date, etc.)
+    for intent_name, pat in PATTERNS:
+        if pat.search(cmd):
+            return intent_name, {}
+
+    # 3. Check Set Volume or Brightness to Specific Number
     vol_set = re.search(r"\b(?:set volume (?:to )?|volume (?:to )?)(\d{1,3})\b", cmd)
     if vol_set:
         val = int(vol_set.group(1))
@@ -142,7 +174,61 @@ def match_deterministic_intent(user_text: str, context: ConversationContext) -> 
     if sens_m:
         return "set_sensitivity", {"level": sens_m.group(1).lower()}
 
-    # 3. Check Search Commands & Contextual Follow-up Search
+    # 4. Check Contextual Application Close ('Close it', 'Close that app')
+    if re.search(r"\b(?:close|quit|exit|kill|band karo)\s+(?:it|that|that app|the app|that application)\b", cmd):
+        resolved_app, _ = context.resolve_target("it")
+        if resolved_app:
+            return "close_app", {"app": resolved_app}
+
+    # 5. Check Close Explicit Application ('Close Chrome', 'Close VS Code', 'Close Notepad')
+    close_app_match = re.search(r"\b(?:close|quit|exit|kill|band karo)\s+([a-z0-9 _\-]+)\b", cmd)
+    if close_app_match:
+        target = close_app_match.group(1).strip()
+        if target not in ("vision", "interface", "hologram", "window", "speech", "speaking"):
+            from modules.apps import APP_ALIASES, BUILTIN_COMMANDS
+            norm = normalize_app_name(target)
+            if norm in APP_ALIASES or norm in BUILTIN_COMMANDS:
+                return "close_app", {"app": norm}
+
+    # 6. Check Open Folder ('Open Downloads', 'Open my Documents folder')
+    folder_match = re.search(r"\b(?:open|show|explore|kholo)\s+(?:my\s+)?(downloads|documents|desktop|pictures|videos|music)(?:\s+folder)?\b", cmd)
+    if folder_match:
+        return "open_folder", {"folder": folder_match.group(1)}
+
+    # 7. Check List Files in Folder ('List files in Downloads', 'What is in my Documents')
+    list_files_match = re.search(r"\b(?:list files|show files|what is in|files in)\s+(?:my\s+)?(downloads|documents|desktop|pictures|videos|music)(?:\s+folder)?\b", cmd)
+    if list_files_match:
+        return "list_files", {"folder": list_files_match.group(1)}
+
+    # 8. Check Open Specific Website ('Open YouTube', 'Open ChatGPT', 'Open GitHub', 'Open reddit.com')
+    site_match = re.search(r"\b(?:open|launch|kholo)\s+(youtube|chatgpt|google|github|reddit|wikipedia|twitter|gmail|netflix|amazon)\b", cmd)
+    if site_match:
+        return "open_site", {"site": site_match.group(1)}
+
+    # Check URL domain directly
+    domain_match = re.search(r"\b([a-zA-Z0-9\-]+\.(?:com|org|net|io|edu|gov|ai))\b", cmd)
+    if domain_match:
+        return "open_site", {"site": domain_match.group(1)}
+
+    # 9. Check Open Application ('Open Chrome', 'Launch VS Code', 'Start Calculator', 'Open Notepad')
+    open_app_match = re.search(r"\b(?:open|launch|start|run|kholo|chalao)\s+([a-z0-9 _\-]+)\b", cmd)
+    if open_app_match:
+        target = open_app_match.group(1).strip()
+        from modules.apps import APP_ALIASES, BUILTIN_COMMANDS
+        norm = normalize_app_name(target)
+        if norm in APP_ALIASES or norm in BUILTIN_COMMANDS:
+            return "open_app", {"app": norm}
+
+    # 10. Check Personal Identity & Notes
+    name_match = re.search(r"\b(?:my name is|call me|mera naam)\s+([a-zA-Z]+)\b", raw, re.I)
+    if name_match:
+        return "set_name", {"name": name_match.group(1).title()}
+
+    note_match = re.search(r"\b(?:remember that|save note|add note|yaad rakhna ki)\s+(.+)\b", cmd)
+    if note_match:
+        return "add_note", {"note": note_match.group(1).strip()}
+
+    # 11. Check Search Commands ('search for python tutorials', 'find latest news on youtube')
     if re.search(r"\b(?:search|find|look up)\b", cmd):
         plat = None
         m_plat = re.search(r"\b(?:on|in)?\s*(youtube|google)\b", cmd, re.I)
@@ -158,64 +244,16 @@ def match_deterministic_intent(user_text: str, context: ConversationContext) -> 
         platform = plat if plat else (context.last_search_platform or "google")
         return "search", {"query": query, "platform": platform}
 
-    # 4. Check standard system patterns first (settings, task manager, battery, etc.)
-    for intent_name, pat in PATTERNS:
-        if pat.search(cmd):
-            return intent_name, {}
+    # 12. Check for Conversational Questions & Discussions
+    if CONVERSATIONAL_REGEX.search(cmd):
+        return "chat", {}
 
-    # 5. Check Contextual Application Close ('Close it', 'Close that app')
-    if re.search(r"\b(?:close|quit|exit|kill|band karo)\s+(?:it|that|that app|the app|that application)\b", cmd):
-        resolved_app, _ = context.resolve_target("it")
-        if resolved_app:
-            return "close_app", {"app": resolved_app}
+    # Check for Follow-Up context if recent dialogue exists
+    if FOLLOW_UP_REGEX.search(cmd) and (getattr(context, "turns", None) or getattr(context, "last_action", "") == "chat"):
+        return "chat", {}
 
-    # 6. Check Close Explicit Application ('Close Chrome', 'Close VS Code', 'Close Notepad')
-    close_app_match = re.search(r"\b(?:close|quit|exit|kill|band karo)\s+([a-z0-9 _\-]+)\b", cmd)
-    if close_app_match:
-        target = close_app_match.group(1).strip()
-        if target not in ("vision", "interface", "hologram", "window"):
-            norm = normalize_app_name(target)
-            return "close_app", {"app": norm}
-
-    # 7. Check Open Folder ('Open Downloads', 'Open my Documents folder')
-    folder_match = re.search(r"\b(?:open|show|explore|kholo)\s+(?:my\s+)?(downloads|documents|desktop|pictures|videos|music)(?:\s+folder)?\b", cmd)
-    if folder_match:
-        return "open_folder", {"folder": folder_match.group(1)}
-
-    # 8. Check List Files in Folder ('List files in Downloads', 'What is in my Documents')
-    list_files_match = re.search(r"\b(?:list files|show files|what is in|files in)\s+(?:my\s+)?(downloads|documents|desktop|pictures|videos|music)(?:\s+folder)?\b", cmd)
-    if list_files_match:
-        return "list_files", {"folder": list_files_match.group(1)}
-
-    # 9. Check Open Specific Website ('Open YouTube', 'Open ChatGPT', 'Open GitHub', 'Open reddit.com')
-    site_match = re.search(r"\b(?:open|launch|kholo)\s+(youtube|chatgpt|google|github|reddit|wikipedia|twitter|gmail|netflix|amazon)\b", cmd)
-    if site_match:
-        return "open_site", {"site": site_match.group(1)}
-
-    # Check URL domain directly
-    domain_match = re.search(r"\b([a-zA-Z0-9\-]+\.(?:com|org|net|io|edu|gov|ai))\b", cmd)
-    if domain_match:
-        return "open_site", {"site": domain_match.group(1)}
-
-    # 10. Check Open Application ('Open Chrome', 'Launch VS Code', 'Start Calculator', 'Open Notepad')
-    open_app_match = re.search(r"\b(?:open|launch|start|run|kholo|chalao)\s+([a-z0-9 _\-]+)\b", cmd)
-    if open_app_match:
-        target = open_app_match.group(1).strip()
-        # Disallow generic words
-        if target not in ("the", "a", "this", "it", "website", "folder", "file", "computer", "settings", "task manager", "vision", "interface"):
-            norm = normalize_app_name(target)
-            return "open_app", {"app": norm}
-
-    # 10. Check Personal Identity & Notes
-    name_match = re.search(r"\b(?:my name is|call me|mera naam)\s+([a-zA-Z]+)\b", raw, re.I)
-    if name_match:
-        return "set_name", {"name": name_match.group(1).title()}
-
-    note_match = re.search(r"\b(?:remember that|save note|add note|yaad rakhna ki)\s+(.+)\b", cmd)
-    if note_match:
-        return "add_note", {"note": note_match.group(1).strip()}
-
-    return None, {}
+    # All unhandled queries are naturally conversational AI queries
+    return "chat", {}
 
 
 def parse_intent_with_ollama(user_text: str, context: ConversationContext, ollama_client: Any, model_name: str) -> Optional[Tuple[str, Dict[str, Any]]]:

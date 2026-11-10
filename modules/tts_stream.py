@@ -44,8 +44,8 @@ ABBREVIATIONS = {
 BARGE_IN_KEYWORDS = {
     "stop", "be quiet", "stop speaking", "cancel", "enough", "pause",
     "quiet", "shut up", "shutup", "that's enough", "thats enough",
-    "stop it", "stop now", "ruk jao", "ruko", "chup", "chup raho",
-    "chup ho jao", "bas karo", "bas"
+    "stop it", "stop now", "listen", "continue", "ruk jao", "ruko",
+    "chup", "chup raho", "chup ho jao", "bas karo", "bas"
 }
 
 

@@ -533,11 +533,12 @@ def start_ollama_service():
     print(f"[Ollama] Starting local Ollama service using {exe}...")
     try:
         env = os.environ.copy()
-        portable_models = os.path.join(SCRIPT_DIR, CONFIG.get("portable_models_dir", "OllamaModels"))
-        if os.environ.get("VISION_PORTABLE") == "1" or os.path.isdir(portable_models):
-            os.makedirs(portable_models, exist_ok=True)
-            env["OLLAMA_MODELS"] = portable_models
-            print(f"[Ollama] Portable models directory active: {portable_models}")
+        # Only use portable models if explicitly in portable mode with an existing populated directory
+        if os.environ.get("VISION_PORTABLE") == "1" and CONFIG.get("portable_mode", False):
+            portable_models = os.path.join(SCRIPT_DIR, CONFIG.get("portable_models_dir", "OllamaModels"))
+            if os.path.isdir(portable_models) and os.listdir(portable_models):
+                env["OLLAMA_MODELS"] = portable_models
+                print(f"[Ollama] Portable models directory active: {portable_models}")
 
         if sys.platform.startswith("win"):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -566,16 +567,22 @@ def get_installed_ollama_models():
             data = json.loads(resp.read().decode("utf-8"))
             return [m.get("name", "") for m in data.get("models", [])]
     except Exception as e:
-        print(f"[Ollama] Could not list models: {e}")
         return []
 
 
 def verify_ollama_model(model_name=None):
-    """Verify configured model is installed; if missing, return helpful instruction."""
+    """
+    Verify whether the target model or a compatible version is installed.
+    Matches exact (e.g. 'llama3.2:1b') or base names (e.g. 'llama3.2:1b-instruct-q4_K_M').
+    """
     target_model = model_name or OLLAMA_MODEL
     models = get_installed_ollama_models()
     for m in models:
-        if m == target_model or m.startswith(target_model + ":") or target_model.startswith(m + ":"):
+        if m == target_model:
+            return True, m
+        if target_model.startswith(m) or m.startswith(target_model):
+            return True, m
+        if m.split(":")[0] == target_model.split(":")[0]:
             return True, m
     return False, target_model
 
@@ -598,10 +605,13 @@ def stream_conversational_response(prompt: str) -> Tuple[bool, str]:
     else:
         available = get_installed_ollama_models()
         if available:
+            # Seamlessly pick the first available model so user is never blocked
             active_model = available[0]
-            print(f"[Ollama] Configured model '{OLLAMA_MODEL}' not downloaded. Falling back to installed model: '{active_model}'")
+            print(f"[Ollama] Model '{OLLAMA_MODEL}' not found. Seamlessly using installed model '{active_model}'.")
+            update_config("ollama_model", active_model)
         else:
-            msg = f"Sorry Sir, the AI model {OLLAMA_MODEL} is not downloaded yet. Please run: ollama pull {OLLAMA_MODEL}"
+            msg = f"Sir, no models are currently installed in Ollama. Please run 'ollama pull {OLLAMA_MODEL}' in your command prompt."
+            print(f"[Ollama] {msg}")
             speak(msg)
             return False, msg
 
@@ -622,7 +632,7 @@ def stream_conversational_response(prompt: str) -> Tuple[bool, str]:
         model_name=active_model,
         messages=messages,
         cancel_event=tts_manager.cancel_event,
-        max_tokens=450 if mode == "detailed" else (300 if mode == "entertainment" else 150)
+        max_tokens=600 if mode == "detailed" else (400 if mode == "entertainment" else 350)
     )
 
     sentence_gen = split_stream_into_sentences(token_gen, tts_manager.cancel_event)
@@ -1420,8 +1430,10 @@ def execute_intent(intent, args, original_command):
     # Speech Control & Barge-in
     elif intent == "tts_stop":
         trigger_barge_in()
-        reply = "Stopped Sir."
-        speak(reply)
+        set_vision_state("interrupted")
+        time.sleep(0.15)
+        set_vision_state("listening")
+        return ""
 
     elif intent == "tts_repeat":
         last = context.last_spoken_reply
@@ -1480,28 +1492,11 @@ def process_command(command):
     try:
         set_vision_state("processing", text=original)
 
-        # Tier 1: Fast Deterministic & Contextual Pattern Matching (< 2ms)
+        # Fast Deterministic & Contextual Pattern Matching
         intent, args = match_deterministic_intent(original, context)
 
-        # Tier 2: Structured Ollama Intent Parsing for ambiguous natural language
-        if intent is None and len(original.split()) >= 2:
-            if is_ollama_service_running():
-                tier2 = parse_intent_with_ollama(original, context, ollama, OLLAMA_MODEL)
-                if tier2:
-                    intent, args = tier2
-
-        # Tier 3: Legacy pattern fallback
-        if intent is None:
-            raw, cmd = prepare_command(original)
-            legacy_intent, legacy_args = detect_intent(cmd, raw)
-            if legacy_intent:
-                intent, args = legacy_intent, legacy_args
-
-        # Tier 4: General conversational AI
-        if intent is None:
-            if len(original.split()) < 2:
-                print(f"[Ignored] Short/noisy input: {original}")
-                return
+        # Default fallback to conversational AI (Chatbot Mode)
+        if intent is None or intent == "chat":
             intent, args = "chat", {}
 
         print(f"[Routed Intent] {intent} -> {args}")
