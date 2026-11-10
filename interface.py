@@ -9,6 +9,8 @@ import threading
 import time
 import urllib.request
 
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
+
 import cv2
 import numpy as np
 
@@ -39,27 +41,66 @@ C_DEEP = (215, 95, 20)
 C_TEXT = (255, 235, 140)
 C_WHITE = (255, 250, 235)
 
+import json
+
 # ---- While Vision speaks the interface turns red (vision.py writes this file) ----
-STATE_FILE = os.path.join(tempfile.gettempdir(), "vision_state.txt")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_STATE_FILE = os.path.join(SCRIPT_DIR, "data", "vision_state.txt")
+DATA_STATE_JSON = os.path.join(SCRIPT_DIR, "data", "vision_state.json")
+TEMP_STATE_FILE = os.path.join(tempfile.gettempdir(), "vision_state.txt")
+
+
+def _get_active_state_file():
+    if os.path.isfile(DATA_STATE_FILE):
+        return DATA_STATE_FILE
+    return TEMP_STATE_FILE
+
+
 _BLUE = dict(C_BRIGHT=C_BRIGHT, C_MID=C_MID, C_DEEP=C_DEEP, C_TEXT=C_TEXT, C_WHITE=C_WHITE)
 _RED = dict(C_BRIGHT=(70, 70, 255), C_MID=(38, 42, 232), C_DEEP=(18, 22, 190),
             C_TEXT=(135, 145, 255), C_WHITE=(235, 240, 255))
 RED_K = [0.0]                    # 0 = blue, 1 = red (smooth transition)
 _state_cache = [0.0, False]
+_state_data = {
+    "state": "idle",
+    "text": "",
+    "result": "",
+    "timestamp": 0.0
+}
 
 
-def vision_speaking():
-    """Read the state file (every ~80 ms). True if it says 'speaking' and is fresh."""
+def get_vision_state_info():
+    """Read full state info (every ~60 ms) from JSON or text file."""
+    global _state_data
     now = time.time()
-    if now - _state_cache[0] > 0.08:
+    if now - _state_cache[0] > 0.06:
         _state_cache[0] = now
+        # Try JSON first
+        if os.path.isfile(DATA_STATE_JSON):
+            try:
+                with open(DATA_STATE_JSON, "r", encoding="utf-8") as f:
+                    _state_data = json.load(f)
+                    _state_cache[1] = (_state_data.get("state") == "speaking")
+                    return _state_data
+            except Exception:
+                pass
+
+        # Fallback to text file
+        state_file = _get_active_state_file()
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(state_file, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
-            fresh = (now - os.path.getmtime(STATE_FILE)) < 120      # avoid getting stuck on red after a crash
+            fresh = (now - os.path.getmtime(state_file)) < 120
+            _state_data["state"] = txt if fresh else "idle"
             _state_cache[1] = (txt == "speaking" and fresh)
         except Exception:
             _state_cache[1] = False
+    return _state_data
+
+
+def vision_speaking():
+    """Read the state file (every ~60 ms). True if it says 'speaking' and is fresh."""
+    get_vision_state_info()
     return _state_cache[1]
 
 
@@ -324,6 +365,60 @@ def draw_title(layer, glow, t):
         cv2.circle(layer, (xa, ly), max(2, int(2.5 * K)), col(C_WHITE, 1.0), -1, cv2.LINE_AA)
 
 
+def draw_status_panel(layer, glow, t):
+    """Draws sleek sci-fi HUD status bar at bottom showing state, recognized speech, and results."""
+    info = get_vision_state_info()
+    st = str(info.get("state", "idle")).lower()
+
+    state_labels = {
+        "idle": "STANDBY // READY",
+        "monitoring": "MONITORING // CLAP TO ACTIVATE",
+        "clap_detected": "CLAP DETECTED // ACTIVATING",
+        "activating": "VISION ONLINE // SYSTEMS OPTIMAL",
+        "listening": "LISTENING FOR COMMAND...",
+        "processing": "PROCESSING QUERY...",
+        "generating": "GENERATING AI RESPONSE...",
+        "executing": "EXECUTING COMMAND...",
+        "speaking": "VISION SPEAKING...",
+        "interrupted": "SPEECH INTERRUPTED // READY",
+        "error": "SYSTEM ERROR",
+    }
+    status_text = state_labels.get(st, f"STATUS: {st.upper()}")
+
+    pulse = 0.82 + 0.18 * math.sin(t * 3.5 if st in ("listening", "speaking", "generating", "clap_detected") else t * 1.5)
+    fs = 0.52 * K
+    th = max(1, int(1.5 * K))
+
+    # Center position near bottom
+    (tw, tht), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+    x0 = int(W / 2 - tw / 2)
+    y0 = int(H - 34 * K)
+
+    # Glowing status badge
+    cv2.putText(glow, status_text, (x0, y0), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                col(C_BRIGHT, 1.2 * pulse), th + max(2, int(2 * K)), cv2.LINE_AA)
+    cv2.putText(layer, status_text, (x0, y0), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                col(mix(C_BRIGHT, C_WHITE, 0.65), pulse), th, cv2.LINE_AA)
+
+    # Corner brackets around status
+    bw = tw + int(36 * K)
+    bx1, bx2 = int(W / 2 - bw / 2), int(W / 2 + bw / 2)
+    by = y0 - tht // 2
+    cv2.line(layer, (bx1, by - 6), (bx1, by + 6), col(C_BRIGHT, pulse), 1, cv2.LINE_AA)
+    cv2.line(layer, (bx2, by - 6), (bx2, by + 6), col(C_BRIGHT, pulse), 1, cv2.LINE_AA)
+
+    # If recent command was recognized, display above status
+    heard_text = info.get("text", "").strip()
+    if heard_text and (time.time() - info.get("timestamp", 0) < 15.0):
+        h_fs = 0.44 * K
+        sub_text = f'"{heard_text[:65]}"'
+        (stw, stht), _ = cv2.getTextSize(sub_text, cv2.FONT_HERSHEY_SIMPLEX, h_fs, 1)
+        sx0 = int(W / 2 - stw / 2)
+        sy0 = y0 - int(22 * K)
+        cv2.putText(layer, sub_text, (sx0, sy0), cv2.FONT_HERSHEY_SIMPLEX, h_fs,
+                    col(C_TEXT, 0.85), 1, cv2.LINE_AA)
+
+
 _BG = {}
 
 
@@ -495,6 +590,7 @@ def render(yaw, pitch, zoom, t):
     # HUD arcs around the sphere
     draw_hud(layer, glow_layer, center, cs[0], t, zoom)
     draw_title(layer, glow_layer, t)
+    draw_status_panel(layer, glow_layer, t)
 
     # ---- bloom ----
     src = cv2.addWeighted(glow_layer, 1.0, layer, 0.45, 0)
@@ -537,8 +633,9 @@ def download_model(path):
         with urllib.request.urlopen(MODEL_URL, context=ctx, timeout=60) as r, open(tmp, "wb") as f:
             shutil.copyfileobj(r, f)
 
-    def with_curl():                                   # curl is always available on macOS
-        subprocess.run(["curl", "-L", "-f", "-s", "-o", tmp, MODEL_URL], check=True, timeout=120)
+    def with_curl():                                   # curl is always available on macOS / Windows
+        curl_cmd = "curl.exe" if sys.platform.startswith("win") else "curl"
+        subprocess.run([curl_cmd, "-L", "-f", "-s", "-o", tmp, MODEL_URL], check=True, timeout=120)
 
     for fn in (plain, with_certifi, with_curl):
         try:

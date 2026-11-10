@@ -3,8 +3,13 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
-memory.json
-screenshots/
-photos/
 hand_landmarker.task
 *.part
+*.tmp
+*.lnk
+data/screenshots/*
+!data/screenshots/.gitkeep
+data/photos/*
+!data/photos/.gitkeep
+data/logs/*
+!data/logs/.gitkeep

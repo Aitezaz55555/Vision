@@ -1,0 +1,59 @@
+{
+    "name": "",
+    "notes": [
+        "my favorite language is python",
+        "my favorite language is python"
+    ],
+    "last_conversation": [
+        {
+            "time": "2026-11-10 11:44:27",
+            "user": "open chat",
+            "vision": "Opening ChatGPT."
+        },
+        {
+            "time": "2026-11-10 11:44:50",
+            "user": "can you explain",
+            "vision": "Sorry Sir, the AI model llama3.2:1b is not downloaded yet. Please run: ollama pull llama3.2:1b"
+        },
+        {
+            "time": "2026-11-10 11:46:08",
+            "user": "which one words",
+            "vision": "Sorry Sir, the AI model llama3.2:1b is not downloaded yet. Please run: ollama pull llama3.2:1b"
+        },
+        {
+            "time": "2026-11-10 11:47:12",
+            "user": "can you say",
+            "vision": "Sorry Sir, the AI model llama3.2:1b is not downloaded yet. Please run: ollama pull llama3.2:1b"
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "minimize window",
+            "vision": "Window minimized."
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "what time is it",
+            "vision": "The time is 12:16 PM Sir."
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "what is today's date",
+            "vision": "Today is Tuesday, November 10, 2026 Sir."
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "remind me to check email in 10 minutes",
+            "vision": "I have set a reminder to check email in 10 minutes, at 12:26 PM."
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "what are my reminders",
+            "vision": "You have 1 active reminder. 1. check email (in 9m 59s at 12:26 PM)"
+        },
+        {
+            "time": "2026-11-10 12:16:03",
+            "user": "cancel all reminders",
+            "vision": "Cleared 1 reminder."
+        }
+    ]
+}

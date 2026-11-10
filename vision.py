@@ -13,11 +13,34 @@ import time
 import urllib.parse
 import webbrowser
 from datetime import datetime
+from typing import Optional, Dict, Any, Tuple, List
+
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
 
 import cv2
 import ollama
 import pyaudio
 import speech_recognition as sr
+
+from modules import (
+    ConversationContext,
+    launch_application, close_application, normalize_app_name, find_application_path, control_window,
+    control_volume, get_volume_level, adjust_brightness,
+    lock_workstation, execute_shutdown, get_battery_info,
+    get_performance_info, get_system_summary, capture_screenshot,
+    open_website, search_web, sanitize_url,
+    open_folder, list_files_in_folder, search_and_open_file,
+    match_deterministic_intent, parse_intent_with_ollama,
+    ClapDetector, acquire_instance_lock, release_instance_lock,
+    enable_startup, disable_startup, is_startup_enabled, get_startup_status,
+    play_activation_chime, play_interrupt_cue,
+    add_reminder, list_reminders, cancel_all_reminders, start_reminder_scheduler,
+    StreamingTTSManager, split_stream_into_sentences, clean_text_for_speech,
+    detect_conversation_mode, build_system_prompt, prepare_chat_messages, stream_ollama_tokens
+)
+
+# Global short-term conversation context
+context = ConversationContext()
 
 try:
     import edge_tts          # natural neural voices (needs internet)
@@ -25,26 +48,107 @@ try:
 except Exception:
     HAS_EDGE = False
 
+try:
+    import pygame
+    HAS_PYGAME = True
+except Exception:
+    HAS_PYGAME = False
 
-# ==================== CONFIG ==================== #
-ASSISTANT_NAME = "Vision"
-CREATOR_NAME = "Taha"                 # change to your name
-OLLAMA_MODEL = "llama3"               # any model you have pulled with `ollama pull`
-MEMORY_FILE = "memory.json"
+try:
+    import pyttsx3
+    HAS_PYTTSX3 = True
+except Exception:
+    HAS_PYTTSX3 = False
 
+try:
+    from ctypes import cast, POINTER
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    HAS_PYCAW = True
+except Exception:
+    HAS_PYCAW = False
+
+try:
+    from PIL import ImageGrab
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except Exception:
+    HAS_PSUTIL = False
+
+
+# ==================== CONFIG & PORTABLE PATHS ==================== #
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(tempfile.gettempdir(), "vision_state.txt")   # interface.py reads this
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "vision_config.json")
+
+
+def load_config():
+    defaults = {
+        "assistant_name": "Vision",
+        "creator_name": "Taha",
+        "ollama_model": "llama3.2:1b",
+        "ollama_api_url": "http://127.0.0.1:11434",
+        "tts_engine": "edge",
+        "edge_voice": "en-US-ChristopherNeural",
+        "edge_rate": "-12%",
+        "edge_pitch": "-18Hz",
+        "edge_volume": "+50%",
+        "play_volume": 2.5,
+        "ultron_effect": True,
+        "clap_threshold": 2000,
+        "data_dir": "data",
+        "portable_mode": False,
+        "portable_models_dir": "OllamaModels",
+    }
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                defaults.update(loaded)
+        except Exception as e:
+            print(f"[Config] Error loading {CONFIG_FILE}: {e}")
+    return defaults
+
+
+CONFIG = load_config()
+
+ASSISTANT_NAME = CONFIG.get("assistant_name", "Vision")
+CREATOR_NAME = CONFIG.get("creator_name", "Taha")
+OLLAMA_MODEL = os.environ.get("VISION_OLLAMA_MODEL", CONFIG.get("ollama_model", "llama3.2:1b"))
+OLLAMA_API_URL = os.environ.get("OLLAMA_HOST", CONFIG.get("ollama_api_url", "http://127.0.0.1:11434"))
+
+# Portable Data Directory (relative to project root on USB drive)
+DATA_DIR_NAME = CONFIG.get("data_dir", "data")
+DATA_DIR = os.path.join(SCRIPT_DIR, DATA_DIR_NAME)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
+SCREENSHOTS_DIR = os.path.join(DATA_DIR, "screenshots")
+PHOTOS_DIR = os.path.join(DATA_DIR, "photos")
+LOGS_DIR = os.path.join(DATA_DIR, "logs")
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(PHOTOS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+STATE_FILE = os.path.join(DATA_DIR, "vision_state.txt")
+FALLBACK_STATE_FILE = os.path.join(tempfile.gettempdir(), "vision_state.txt")
+STATE_JSON_FILE = os.path.join(DATA_DIR, "vision_state.json")
+FALLBACK_STATE_JSON = os.path.join(tempfile.gettempdir(), "vision_state.json")
 INTERFACE_PATH = os.path.join(SCRIPT_DIR, "interface.py")
-INTERFACE_ARGS = []                   # e.g. ["--hd"] for Full HD, ["--sd"] for lighter/faster
+INTERFACE_ARGS = []
 
 # ---- Voice ----
-TTS_ENGINE = "edge"                   # "edge" = natural neural voice (recommended) | "macos" = built-in `say`
-EDGE_VOICE = "en-US-ChristopherNeural"  # others: en-US-GuyNeural, en-GB-RyanNeural, en-US-AndrewNeural
-EDGE_RATE = "-12%"
-EDGE_PITCH = "-18Hz"
-EDGE_VOLUME = "+50%"
-PLAY_VOLUME = 2.5                     # afplay volume: 1.0 normal, 2.5 loud
-ULTRON_EFFECT = True                  # needs `brew install sox`; adds a doubled/metallic effect
+TTS_ENGINE = CONFIG.get("tts_engine", "edge")
+EDGE_VOICE = CONFIG.get("edge_voice", "en-US-ChristopherNeural")
+EDGE_RATE = CONFIG.get("edge_rate", "-12%")
+EDGE_PITCH = CONFIG.get("edge_pitch", "-18Hz")
+EDGE_VOLUME = CONFIG.get("edge_volume", "+50%")
+PLAY_VOLUME = float(CONFIG.get("play_volume", 2.5))
+ULTRON_EFFECT = bool(CONFIG.get("ultron_effect", True))
 ULTRON_FX = ["compand", "0.02,0.2", "6:-70,-60,-20", "-5", "-90", "0.1",
              "pitch", "-80",
              "chorus", "0.7", "0.9", "55", "0.4", "0.25", "2", "-t",
@@ -54,14 +158,14 @@ ULTRON_FX = ["compand", "0.02,0.2", "6:-70,-60,-20", "-5", "-90", "0.1",
              "reverb", "20", "50", "60",
              "norm", "-0.5"]
 SOX_PATH = shutil.which("sox")
-VOICE_CANDIDATES = ["Ralph", "Daniel", "Alex", "Fred"]   # fallback macOS voices
+VOICE_CANDIDATES = ["Ralph", "Daniel", "Alex", "Fred"]
 VOICE_RATE = 150
 
 # ---- Double clap ----
-CLAP_THRESHOLD = 2000
-CLAP_MIN_INTERVAL = 0.1
-CLAP_MAX_INTERVAL = 0.8
-CLAP_DEBOUNCE = 0.05
+CLAP_THRESHOLD = CONFIG.get("clap_threshold", "auto")
+CLAP_MIN_INTERVAL = 0.10
+CLAP_MAX_INTERVAL = 0.85
+CLAP_DEBOUNCE = 0.08
 AUDIO_CHUNK = 1024
 AUDIO_RATE = 44100
 AUDIO_FORMAT = pyaudio.paInt16
@@ -87,37 +191,71 @@ interface_proc = None
 
 
 def pick_voice():
-    try:
-        out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=5).stdout
-        for name in VOICE_CANDIDATES:
-            if re.search(rf"^{re.escape(name)}\s", out, re.MULTILINE):
-                return name
-    except Exception:
-        pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=5).stdout
+            for name in VOICE_CANDIDATES:
+                if re.search(rf"^{re.escape(name)}\s", out, re.MULTILINE):
+                    return name
+        except Exception:
+            pass
     return None
 
 
 VOICE = pick_voice()
 
 
+def set_vision_state(state: str, text: str = "", result: str = ""):
+    """Updates atomic visual state JSON and text files for the interface."""
+    state_obj = {
+        "state": state,
+        "text": text,
+        "result": result,
+        "timestamp": time.time(),
+    }
+    # Write JSON
+    for p in (STATE_JSON_FILE, FALLBACK_STATE_JSON):
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(state_obj, f)
+        except Exception:
+            pass
+
+    # Write text for backward compatibility
+    simple_txt = "speaking" if state == "speaking" else "idle"
+    for p in (STATE_FILE, FALLBACK_STATE_FILE):
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(simple_txt)
+        except Exception:
+            pass
+
+
 def set_speaking(flag):
     """Tell the interface whether Vision is speaking (interface turns red)."""
-    try:
-        with open(STATE_FILE, "w") as f:
-            f.write("speaking" if flag else "idle")
-    except Exception:
-        pass
+    set_vision_state("speaking" if flag else "idle")
 
 
 set_speaking(False)
 
 # ==================== SPEECH RECOGNIZER ==================== #
+def get_microphone():
+    """Return sr.Microphone with configured device_index if specified in config, else default."""
+    cfg_idx = CONFIG.get("microphone_device_index", None)
+    if cfg_idx is not None and isinstance(cfg_idx, int):
+        try:
+            return sr.Microphone(device_index=cfg_idx)
+        except Exception:
+            pass
+    return sr.Microphone()
+
+
 def create_recognizer():
     r = sr.Recognizer()
-    r.pause_threshold = 0.6
-    r.phrase_threshold = 0.2
-    r.non_speaking_duration = 0.3
-    r.energy_threshold = 150
+    r.pause_threshold = float(CONFIG.get("pause_threshold", 0.5))
+    r.phrase_threshold = float(CONFIG.get("phrase_threshold", 0.2))
+    r.non_speaking_duration = float(CONFIG.get("non_speaking_duration", 0.3))
+    r.energy_threshold = int(CONFIG.get("energy_threshold", 150))
     r.dynamic_energy_threshold = True
     return r
 
@@ -133,7 +271,7 @@ def calibrate_microphone_once(force=False):
     try:
         print("Calibrating microphone for ambient noise...")
         with audio_lock:
-            with sr.Microphone() as source:
+            with get_microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.8)
         recognizer.energy_threshold = max(80, min(250, recognizer.energy_threshold))
         last_calibration_time = time.time()
@@ -161,7 +299,7 @@ def safe_listen(timeout=5, phrase_time=6, mode="command"):
     """Open the microphone for one bounded listen cycle, then release it."""
     try:
         with audio_lock:
-            with sr.Microphone() as source:
+            with get_microphone() as source:
                 print(f"Listening ({mode})...")
                 audio = recognizer.listen(source, timeout=max(1, int(timeout)),
                                           phrase_time_limit=max(1, int(phrase_time)))
@@ -210,11 +348,18 @@ def load_memory():
 
 
 def save_memory(memory):
+    tmp_path = MEMORY_FILE + ".tmp"
     try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(memory, f, indent=4)
+        os.replace(tmp_path, MEMORY_FILE)
     except Exception as e:
         print("Memory save error:", e)
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def save_conversation(user_text, vision_reply):
@@ -294,50 +439,48 @@ async def _edge_save(text, path):
     await comm.save(path)
 
 
-def speak_edge(text):
-    """Neural voice -> optional sox effect -> afplay. Returns False on failure."""
-    mp3 = wav = fx = None
-    try:
-        mp3 = _tmp(".mp3")
-        asyncio.run(_edge_save(text, mp3))
-        play_path = mp3
-        if shutil.which("afconvert"):
-            wav = _tmp(".wav")
-            subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@44100", mp3, wav], check=True)
-            play_path = wav
-            if ULTRON_EFFECT and SOX_PATH:
-                fx = _tmp(".wav")
-                subprocess.run([SOX_PATH, wav, fx] + ULTRON_FX, check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                play_path = fx
-        set_speaking(True)
-        subprocess.run(["afplay", "-v", str(PLAY_VOLUME), play_path], check=True)
-        return True
-    except Exception as e:
-        print("Edge voice failed (check internet / edge-tts), falling back to macOS voice:", e)
-        return False
-    finally:
-        _rm(mp3, wav, fx)
+# ==================== STREAMING TTS & INSTANT BARGE-IN ENGINE ==================== #
+tts_manager = StreamingTTSManager(
+    voice=EDGE_VOICE,
+    rate=EDGE_RATE,
+    pitch=EDGE_PITCH,
+    volume=EDGE_VOLUME,
+    state_callback=set_vision_state,
+    microphone_factory=get_microphone,
+    recognizer_factory=create_recognizer
+)
+
+# Backward-compatibility alias for tests and background listeners
+tts_interrupted = tts_manager.cancel_event
+tts_playing = tts_manager.is_playing
+
+# Backward-compatibility hooks
+speak_edge = None
+speak_offline = None
 
 
-def speak_macos(text):
-    cmd = ["say"] + (["-v", VOICE] if VOICE else []) + ["-r", str(VOICE_RATE), text]
-    set_speaking(True)
-    subprocess.run(cmd)
+def trigger_barge_in(reason: str = "user"):
+    """Immediately halts audio playback, cancels Ollama generation, and notifies interface."""
+    tts_manager.interrupt(reason=reason)
 
 
 def speak(text):
-    try:
-        text = str(text).replace("\n", " ").strip().lstrip("-")
-        if not text:
-            return
-        print("vision:", text)
-        if not (TTS_ENGINE == "edge" and HAS_EDGE and speak_edge(text)):
-            speak_macos(text)
-    except Exception as e:
-        print("Speech error:", e)
-    finally:
-        set_speaking(False)
+    """Speaks a message with instant barge-in support."""
+    if not context.spoken_responses_enabled:
+        print("[Silent Mode] vision:", text)
+        set_vision_state("executing", result=str(text))
+        return
+
+    cleaned = str(text).replace("\n", " ").strip().lstrip("-")
+    if not cleaned:
+        return
+    print("vision:", cleaned)
+    if callable(speak_edge):
+        try:
+            return speak_edge(cleaned)
+        except Exception:
+            pass
+    tts_manager.speak_text(cleaned)
 
 
 def time_greeting():
@@ -345,37 +488,217 @@ def time_greeting():
     return "Good morning" if hour < 12 else "Good afternoon" if hour < 17 else "Good evening"
 
 
-# ==================== AI CHAT (Ollama) ==================== #
-def ask_local_ai(prompt):
+# ==================== OLLAMA MANAGER & DETECTION ==================== #
+def find_ollama_executable():
+    """Locate ollama executable across PATH, standard Windows paths, and project-local paths."""
+    cmd = shutil.which("ollama") or shutil.which("ollama.exe")
+    if cmd:
+        return cmd
+
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Ollama\ollama.exe"),
+        os.path.join(SCRIPT_DIR, "Ollama", "ollama.exe"),
+        os.path.join(SCRIPT_DIR, "ollama.exe"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def is_ollama_service_running(host=None):
+    """Check whether local Ollama service is reachable on its API."""
+    import urllib.request
+    url = (host or OLLAMA_API_URL).rstrip("/") + "/api/tags"
     try:
-        memory = load_memory()
-        name = memory.get("name", "").strip()
-        notes = memory.get("notes", [])
-        system = (f"You are {ASSISTANT_NAME}, a powerful and intelligent AI assistant created by {CREATOR_NAME}. "
-                  "You speak in a calm, deep, confident tone like a futuristic AI. Address the user as Sir.\n"
-                  f"User name: {name or 'Unknown'}\n"
-                  f"Important notes: {notes[-5:] if notes else []}\n"
-                  "Reply naturally and briefly unless detail is needed.")
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ])
-        return response["message"]["content"]
+        req = urllib.request.Request(url, headers={"User-Agent": "VISION-Assistant"})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def start_ollama_service():
+    """Attempt to start local Ollama server if not currently running."""
+    if is_ollama_service_running():
+        return True
+
+    exe = find_ollama_executable()
+    if not exe:
+        print("[Ollama] Could not locate ollama.exe on this system.")
+        return False
+
+    print(f"[Ollama] Starting local Ollama service using {exe}...")
+    try:
+        env = os.environ.copy()
+        portable_models = os.path.join(SCRIPT_DIR, CONFIG.get("portable_models_dir", "OllamaModels"))
+        if os.environ.get("VISION_PORTABLE") == "1" or os.path.isdir(portable_models):
+            os.makedirs(portable_models, exist_ok=True)
+            env["OLLAMA_MODELS"] = portable_models
+            print(f"[Ollama] Portable models directory active: {portable_models}")
+
+        if sys.platform.startswith("win"):
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen([exe, "serve"], env=env, creationflags=flags)
+        else:
+            subprocess.Popen([exe, "serve"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        for _ in range(16):
+            time.sleep(0.5)
+            if is_ollama_service_running():
+                print("[Ollama] Local Ollama service is up and running!")
+                return True
     except Exception as e:
-        print("Ollama error:", e)
-        return "Sorry Sir, AI is not responding."
+        print(f"[Ollama] Error starting service: {e}")
+
+    return is_ollama_service_running()
+
+
+def get_installed_ollama_models():
+    """Retrieve list of locally installed Ollama models via API."""
+    import urllib.request
+    url = OLLAMA_API_URL.rstrip("/") + "/api/tags"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "VISION-Assistant"})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return [m.get("name", "") for m in data.get("models", [])]
+    except Exception as e:
+        print(f"[Ollama] Could not list models: {e}")
+        return []
+
+
+def verify_ollama_model(model_name=None):
+    """Verify configured model is installed; if missing, return helpful instruction."""
+    target_model = model_name or OLLAMA_MODEL
+    models = get_installed_ollama_models()
+    for m in models:
+        if m == target_model or m.startswith(target_model + ":") or target_model.startswith(m + ":"):
+            return True, m
+    return False, target_model
+
+
+# ==================== STREAMING CONVERSATIONAL AI (Ollama) ==================== #
+def stream_conversational_response(prompt: str) -> Tuple[bool, str]:
+    """
+    Streams conversational AI response from Ollama, splits tokens into sentences,
+    and plays sentence 1 immediately while sentence 2 is being generated.
+    Supports Normal, Detailed, and Entertainment modes with instant barge-in.
+    Returns: (was_interrupted: bool, full_reply: str)
+    """
+    if not is_ollama_service_running():
+        start_ollama_service()
+
+    active_model = OLLAMA_MODEL
+    is_installed, resolved_model = verify_ollama_model(OLLAMA_MODEL)
+    if is_installed:
+        active_model = resolved_model
+    else:
+        available = get_installed_ollama_models()
+        if available:
+            active_model = available[0]
+            print(f"[Ollama] Configured model '{OLLAMA_MODEL}' not downloaded. Falling back to installed model: '{active_model}'")
+        else:
+            msg = f"Sorry Sir, the AI model {OLLAMA_MODEL} is not downloaded yet. Please run: ollama pull {OLLAMA_MODEL}"
+            speak(msg)
+            return False, msg
+
+    memory = load_memory()
+    mode, messages = prepare_chat_messages(
+        user_prompt=prompt,
+        context=context,
+        memory=memory,
+        assistant_name=ASSISTANT_NAME,
+        creator_name=CREATOR_NAME
+    )
+
+    print(f"[Ollama Chat] Streaming response in mode='{mode}' model='{active_model}'...")
+    set_vision_state("generating", text=prompt)
+
+    token_gen = stream_ollama_tokens(
+        ollama_client=ollama,
+        model_name=active_model,
+        messages=messages,
+        cancel_event=tts_manager.cancel_event,
+        max_tokens=450 if mode == "detailed" else (300 if mode == "entertainment" else 150)
+    )
+
+    sentence_gen = split_stream_into_sentences(token_gen, tts_manager.cancel_event)
+
+    was_interrupted, full_reply = tts_manager.speak_stream(sentence_gen)
+
+    if not was_interrupted:
+        context.add_turn(prompt, full_reply, "chat")
+        save_conversation(prompt, full_reply)
+        set_vision_state("idle", result=full_reply)
+    else:
+        print("\n[Barge-In] Conversational generation and playback stopped!")
+        set_vision_state("interrupted")
+        time.sleep(0.2)
+        set_vision_state("listening")
+
+    return was_interrupted, full_reply
+
+
+def ask_local_ai(prompt: str) -> str:
+    """Non-streaming backward-compatibility wrapper."""
+    _, reply = stream_conversational_response(prompt)
+    return reply
 
 
 # ==================== BASIC ACTIONS ==================== #
+def open_path(path):
+    """Cross-platform path/file opener: os.startfile on Windows, open on macOS, xdg-open on Linux."""
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(os.path.abspath(path))
+        elif sys.platform == "darwin":
+            subprocess.run(["open", path])
+        else:
+            subprocess.run(["xdg-open", path])
+    except Exception as e:
+        print("Error opening path:", e)
+
+
 def open_folder_anywhere(name):
     try:
-        result = subprocess.run(["mdfind", name], capture_output=True, text=True)
-        folders = [f for f in result.stdout.strip().split("\n") if os.path.isdir(f)]
-        if folders:
-            speak("Opening folder")
-            subprocess.run(["open", folders[0]])
+        target = name.strip().lower()
+        if sys.platform.startswith("win"):
+            search_roots = [
+                os.path.expanduser("~/Desktop"),
+                os.path.expanduser("~/Documents"),
+                os.path.expanduser("~/Downloads"),
+                os.path.expanduser("~"),
+            ]
+            found = None
+            for root in search_roots:
+                if not os.path.isdir(root):
+                    continue
+                try:
+                    for entry in os.scandir(root):
+                        if entry.is_dir() and target in entry.name.lower():
+                            found = entry.path
+                            break
+                except Exception:
+                    continue
+                if found:
+                    break
+
+            if found:
+                speak("Opening folder")
+                open_path(found)
+            else:
+                speak("Folder not found Sir")
         else:
-            speak("Folder not found Sir")
+            result = subprocess.run(["mdfind", name], capture_output=True, text=True)
+            folders = [f for f in result.stdout.strip().split("\n") if os.path.isdir(f)]
+            if folders:
+                speak("Opening folder")
+                subprocess.run(["open", folders[0]])
+            else:
+                speak("Folder not found Sir")
     except Exception as e:
         print("Folder search error:", e)
         speak("Error while opening folder")
@@ -404,11 +727,30 @@ def play_song(song):
 
 
 def take_screenshot():
-    os.makedirs("screenshots", exist_ok=True)
-    path = f"screenshots/screenshot_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"
-    subprocess.run(["screencapture", "-x", path])       # built into macOS
-    subprocess.run(["open", path])
-    return path
+    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    path = os.path.join(SCREENSHOTS_DIR, f"screenshot_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png")
+    success = False
+    if HAS_PIL:
+        try:
+            img = ImageGrab.grab()
+            img.save(path)
+            success = True
+        except Exception as e:
+            print("PIL ImageGrab error:", e)
+
+    if not success and sys.platform == "darwin" and shutil.which("screencapture"):
+        try:
+            subprocess.run(["screencapture", "-x", path])
+            success = True
+        except Exception:
+            pass
+
+    if success and os.path.exists(path):
+        open_path(path)
+        return path
+
+    speak("Failed to take screenshot Sir")
+    return None
 
 
 def take_photo():
@@ -424,10 +766,10 @@ def take_photo():
         if not ret:
             speak("Failed to capture photo")
             return None
-        os.makedirs("photos", exist_ok=True)
-        path = f"photos/photo_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
+        os.makedirs(PHOTOS_DIR, exist_ok=True)
+        path = os.path.join(PHOTOS_DIR, f"photo_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.jpg")
         cv2.imwrite(path, frame)
-        subprocess.run(["open", path])
+        open_path(path)
         speak("Photo captured successfully")
         return path
     except Exception as e:
@@ -436,7 +778,7 @@ def take_photo():
         return None
 
 
-PERMISSION_HINT = "Sorry Sir, I could not do that. Please allow Accessibility and Automation permission for Terminal."
+PERMISSION_HINT = "Sorry Sir, I could not do that. Please allow permission for audio control."
 VOLUME_STEP = 10
 
 
@@ -459,52 +801,58 @@ def _to_int(value, default=None):
         return default
 
 
-def control_volume(mode, value=None):
-    mode = str(mode or "").lower()
-    step = _to_int(value)
-    if mode == "mute":
-        speak("Muting")
-        run_osascript("set volume with output muted")
-        return "Muted"
-    if mode == "unmute":
-        run_osascript("set volume without output muted")
-        speak("Unmuted")
-        return "Unmuted"
-
-    current = _to_int(run_osascript("output volume of (get volume settings)"), 50)
-    if mode == "set":
-        target = step if step is not None else current
-    elif mode == "up":
-        target = current + (step if step is not None else VOLUME_STEP)
-    elif mode == "down":
-        target = current - (step if step is not None else VOLUME_STEP)
-    else:
-        speak("Should I increase or decrease the volume?")
-        return "Volume direction not clear"
-
-    target = max(0, min(100, target))
-    if run_osascript(f"set volume output volume {target}") is None:
-        speak(PERMISSION_HINT)
-        return "Volume change failed"
-    if target > 0:
-        run_osascript("set volume without output muted")
-    reply = f"Volume set to {target} percent"
-    speak(reply)
-    return reply
+# Volume control is handled by modules.system.control_volume
 
 
 def get_battery_status():
-    try:
-        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
-        m = re.search(r"(\d+)%", out)
-        if not m:
-            reply = "I could not read the battery level"
-        else:
-            charging = re.search(r"\bcharging\b|\bfinishing charge\b", out) and "discharging" not in out
-            reply = f"Battery is at {m.group(1)} percent and {'charging' if charging else 'not charging'}"
-    except Exception as e:
-        print("Battery error:", e)
-        reply = "I could not read the battery level"
+    if HAS_PSUTIL:
+        try:
+            battery = psutil.sensors_battery()
+            if battery is not None:
+                pct = int(battery.percent)
+                charging = battery.power_plugged
+                reply = f"Battery is at {pct} percent and {'charging' if charging else 'not charging'}"
+                speak(reply)
+                return reply
+        except Exception as e:
+            print("psutil battery error:", e)
+
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            class SYSTEM_POWER_STATUS(ctypes.Structure):
+                _fields_ = [
+                    ('ACLineStatus', ctypes.c_byte),
+                    ('BatteryFlag', ctypes.c_byte),
+                    ('BatteryLifePercent', ctypes.c_byte),
+                    ('SystemStatusFlag', ctypes.c_byte),
+                    ('BatteryLifeTime', ctypes.c_ulong),
+                    ('BatteryFullLifeTime', ctypes.c_ulong),
+                ]
+            status = SYSTEM_POWER_STATUS()
+            if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+                pct = status.BatteryLifePercent
+                if pct != 255:
+                    charging = status.ACLineStatus == 1
+                    reply = f"Battery is at {pct} percent and {'charging' if charging else 'not charging'}"
+                    speak(reply)
+                    return reply
+        except Exception as e:
+            print("Windows battery error:", e)
+
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"(\d+)%", out)
+            if m:
+                charging = re.search(r"\bcharging\b|\bfinishing charge\b", out) and "discharging" not in out
+                reply = f"Battery is at {m.group(1)} percent and {'charging' if charging else 'not charging'}"
+                speak(reply)
+                return reply
+        except Exception as e:
+            print("pmset battery error:", e)
+
+    reply = "I could not read the battery level or your system is connected to AC power without a battery"
     speak(reply)
     return reply
 
@@ -514,14 +862,30 @@ def open_app(app_name):
         reply = "Opening YouTube"
         speak(reply)
         webbrowser.open("https://youtube.com")
-    elif app_name == "safari":
-        reply = "Opening Safari"
+    elif app_name in ("safari", "edge", "browser"):
+        reply = "Opening browser"
         speak(reply)
-        subprocess.run(["open", "-a", "Safari"])
+        if sys.platform.startswith("win"):
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "msedge"], shell=True)
+            except Exception:
+                webbrowser.open("https://google.com")
+        elif sys.platform == "darwin":
+            subprocess.run(["open", "-a", "Safari"])
+        else:
+            webbrowser.open("https://google.com")
     elif app_name == "chrome":
         reply = "Opening Chrome"
         speak(reply)
-        subprocess.run(["open", "-a", "Google Chrome"])
+        if sys.platform.startswith("win"):
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "chrome"], shell=True)
+            except Exception:
+                webbrowser.open("https://google.com")
+        elif sys.platform == "darwin":
+            subprocess.run(["open", "-a", "Google Chrome"])
+        else:
+            webbrowser.open("https://google.com")
     else:
         reply = "Sorry Sir, I do not know that app"
         speak(reply)
@@ -539,21 +903,36 @@ def introduce_yourself():
 def enter_active_mode():
     global conversation_mode
     conversation_mode = True
+    set_vision_state("listening")
 
 
 def exit_active_mode():
     global conversation_mode
     conversation_mode = False
-    print("Vision is idle. Say 'Hey Vision' to resume.")
+    set_vision_state("monitoring")
+    print("\n[Standby] Vision is in background standby. Clap twice to activate!")
 
 
 def run_active_listening_loop():
     print("[Active mode] Continuous listening ON...")
+    silence_count = 0
+    max_silence = 4  # after 4 consecutive empty listens (~16s), return to standby
+
     while conversation_mode:
+        set_vision_state("listening")
         command = listen_for_command()
         if command:
+            silence_count = 0
+            set_vision_state("processing", text=command)
             process_command(command)
+            if not conversation_mode:
+                break
         else:
+            silence_count += 1
+            if silence_count >= max_silence:
+                print("[Active mode] Inactivity timeout. Returning to background standby.")
+                exit_active_mode()
+                break
             time.sleep(0.05)
 
 
@@ -566,6 +945,7 @@ APP_ALIASES = {
     "youtube": ["youtube", "you tube"],
     "safari": ["safari"],
     "chrome": ["google chrome", "chrome", "crome"],
+    "edge": ["edge", "microsoft edge", "ms edge", "browser", "internet explorer"],
 }
 PLAY_WORDS = ["play", "bajao", "baja do", "bajana", "sunao", "suna do", "sunna", "lagao", "laga do"]
 SONG_WORDS = ["song", "songs", "gana", "gaana", "gaane", "music"]
@@ -747,9 +1127,172 @@ def ask_followup(question, timeout=8, phrase_time=8):
 def execute_intent(intent, args, original_command):
     reply = ""
 
+    # Windows Applications
     if intent == "open_app":
-        reply = open_app(args.get("app"))
+        app_target = args.get("app", "")
+        ok, reply, key = launch_application(app_target)
+        context.update_action("open_app", {"app": key or app_target}, reply)
+        speak(reply)
 
+    elif intent == "close_app":
+        app_target = args.get("app", "")
+        ok, reply = close_application(app_target)
+        context.update_action("close_app", {"app": app_target}, reply)
+        speak(reply)
+
+    # Browser & Web
+    elif intent == "open_site":
+        site_target = args.get("site", "")
+        ok, reply, key = open_website(site_target)
+        context.update_action("open_site", {"site": key or site_target}, reply)
+        speak(reply)
+
+    elif intent == "search":
+        platform = str(args.get("platform", "google")).lower()
+        query = str(args.get("query", "")).strip() or ask_followup("What should I search for?", 8, 10)
+        if query:
+            ok, reply = search_web(query, platform)
+            context.update_action("search", {"query": query, "platform": platform}, reply)
+            speak(reply)
+        else:
+            reply = "I did not get the search query."
+            speak(reply)
+
+    elif intent == "play_song":
+        song = str(args.get("song", "")).strip()
+        play_song(song)
+        context.update_action("search", {"query": song, "platform": "youtube"}, f"Playing {song}")
+        reply = f"Play request processed for {song}"
+
+    # Files & Folders
+    elif intent == "open_folder":
+        folder_target = str(args.get("folder", "") or args.get("name", "")).strip()
+        if not folder_target:
+            folder_target = ask_followup("Which folder should I open?")
+        if folder_target:
+            ok, reply, path = open_folder(folder_target)
+            context.update_action("open_folder", {"folder": folder_target}, reply)
+            speak(reply)
+        else:
+            reply = "I did not get the folder name."
+            speak(reply)
+
+    elif intent == "list_files":
+        folder_target = str(args.get("folder", "downloads")).strip()
+        ok, reply, _ = list_files_in_folder(folder_target)
+        context.update_action("list_files", {"folder": folder_target}, reply)
+        speak(reply)
+
+    elif intent == "create_folder":
+        name = str(args.get("name", "")).strip() or ask_followup("What should I name the folder?", 10, 12)
+        if name:
+            create_folder(name.lower().strip())
+            reply = f"Folder creation processed for {name}"
+        else:
+            reply = "I did not get the folder name"
+            speak(reply)
+
+    # System Controls
+    elif intent == "volume_up":
+        ok, reply = control_volume("up")
+        speak(reply)
+
+    elif intent == "volume_down":
+        ok, reply = control_volume("down")
+        speak(reply)
+
+    elif intent == "volume_set":
+        ok, reply = control_volume("set", args.get("value"))
+        speak(reply)
+
+    elif intent == "volume_mute":
+        ok, reply = control_volume("mute")
+        speak(reply)
+
+    elif intent == "volume_unmute":
+        ok, reply = control_volume("unmute")
+        speak(reply)
+
+    elif intent == "volume":
+        ok, reply = control_volume(args.get("mode", "up"), args.get("value"))
+        speak(reply)
+
+    elif intent == "brightness_up":
+        ok, reply = adjust_brightness("up")
+        speak(reply)
+
+    elif intent == "brightness_down":
+        ok, reply = adjust_brightness("down")
+        speak(reply)
+
+    elif intent == "brightness_set":
+        ok, reply = adjust_brightness("set", args.get("value"))
+        speak(reply)
+
+    elif intent == "battery":
+        reply = get_battery_info()
+        speak(reply)
+
+    elif intent == "performance":
+        reply = get_performance_info()
+        speak(reply)
+
+    elif intent == "system_info":
+        reply = get_system_summary()
+        speak(reply)
+
+    elif intent == "lock_workstation":
+        ok, reply = lock_workstation()
+        speak(reply)
+
+    elif intent == "task_manager":
+        ok, reply, _ = launch_application("taskmgr")
+        speak(reply)
+
+    elif intent == "settings":
+        ok, reply, _ = launch_application("settings")
+        speak(reply)
+
+    # Sensitive System Operations (Requiring Confirmation)
+    elif intent == "shutdown_request":
+        context.set_confirmation("shutdown", {}, "Sir, are you sure you want to shut down your PC?")
+        reply = "Sir, you have requested to shut down your computer. Are you sure you want to proceed? Please say yes or no."
+        speak(reply)
+
+    elif intent == "restart_request":
+        context.set_confirmation("restart", {}, "Sir, are you sure you want to restart your PC?")
+        reply = "Sir, you have requested to restart your computer. Are you sure you want to proceed? Please say yes or no."
+        speak(reply)
+
+    elif intent == "confirm_action":
+        if args.get("proceed"):
+            action = context.pending_confirmation.get("type") if context.pending_confirmation else None
+            context.clear_confirmation()
+            if action == "shutdown":
+                ok, reply = execute_shutdown(restart=False)
+                speak(reply)
+            elif action == "restart":
+                ok, reply = execute_shutdown(restart=True)
+                speak(reply)
+            else:
+                reply = "Confirmed, action executed Sir."
+                speak(reply)
+        else:
+            context.clear_confirmation()
+            reply = "Operation cancelled Sir."
+            speak(reply)
+
+    # Screenshots & Media
+    elif intent == "screenshot":
+        ok, reply, path = capture_screenshot(SCREENSHOTS_DIR)
+        speak(reply)
+
+    elif intent == "take_photo":
+        path = take_photo()
+        reply = f"Photo captured and saved at {path}" if path else "Photo capture failed"
+        speak(reply)
+
+    # Holographic Interface
     elif intent == "interface":
         if str(args.get("action", "open")).lower() == "close":
             reply = "Interface closed" if close_interface() else "The interface is not running"
@@ -762,53 +1305,7 @@ def execute_intent(intent, args, original_command):
             speak(reply)
             open_interface()
 
-    elif intent == "open_folder":
-        name = str(args.get("name", "")).strip() or ask_followup("Which folder should I open?")
-        if name:
-            open_folder_anywhere(name.lower())
-            reply = f"Tried to open folder {name}"
-        else:
-            reply = "I did not get the folder name"
-            speak(reply)
-
-    elif intent == "play_song":
-        song = str(args.get("song", "")).strip()
-        play_song(song)
-        reply = f"Play request processed for {song}"
-
-    elif intent == "search":
-        platform = str(args.get("platform", "google")).lower()
-        query = str(args.get("query", "")).strip() or ask_followup("What should I search for?", 8, 10)
-        if query:
-            encoded = urllib.parse.quote(query)
-            if platform == "youtube":
-                webbrowser.open(f"https://www.youtube.com/results?search_query={encoded}")
-                reply = f"Searching YouTube for {query}"
-            else:
-                webbrowser.open(f"https://www.google.com/search?q={encoded}")
-                reply = f"Searching Google for {query}"
-        else:
-            reply = "I did not get the search query"
-        speak(reply)
-
-    elif intent == "screenshot":
-        path = take_screenshot()
-        reply = f"Screenshot taken and saved at {path}"
-        speak("Screenshot taken")
-
-    elif intent == "take_photo":
-        path = take_photo()
-        reply = f"Photo captured and saved at {path}" if path else "Photo capture failed"
-
-    elif intent == "create_folder":
-        name = str(args.get("name", "")).strip() or ask_followup("What should I name the folder?", 10, 12)
-        if name:
-            create_folder(name.lower().strip())
-            reply = f"Folder creation processed for {name}"
-        else:
-            reply = "I did not get the folder name"
-            speak(reply)
-
+    # Personal Memory & Notes
     elif intent == "set_name":
         name = str(args.get("name", "")).strip().title()
         if name:
@@ -877,11 +1374,90 @@ def execute_intent(intent, args, original_command):
         introduce_yourself()
         reply = "Introduction completed"
 
-    elif intent == "volume":
-        reply = control_volume(args.get("mode"), args.get("value"))
+    # Window Management
+    elif intent in ("window_minimize", "window_maximize", "window_restore"):
+        action = intent.replace("window_", "")
+        ok, reply = control_window(action)
+        speak(reply)
 
-    elif intent == "battery":
-        reply = get_battery_status()
+    # Time & Date
+    elif intent == "get_time":
+        reply = f"The time is {datetime.now().strftime('%I:%M %p')} Sir."
+        speak(reply)
+
+    elif intent == "get_date":
+        reply = f"Today is {datetime.now().strftime('%A, %B %d, %Y')} Sir."
+        speak(reply)
+
+    # Reminders
+    elif intent == "add_reminder":
+        task = args.get("task", "")
+        delay = args.get("delay", 60.0)
+        ok, reply = add_reminder(task, delay)
+        speak(reply)
+
+    elif intent == "list_reminders":
+        ok, reply, _ = list_reminders()
+        speak(reply)
+
+    elif intent == "cancel_reminders":
+        ok, reply = cancel_all_reminders()
+        speak(reply)
+
+    # Startup Management
+    elif intent == "startup_enable":
+        ok, reply = enable_startup()
+        speak(reply)
+
+    elif intent == "startup_disable":
+        ok, reply = disable_startup()
+        speak(reply)
+
+    elif intent == "startup_status":
+        reply = get_startup_status()
+        speak(reply)
+
+    # Speech Control & Barge-in
+    elif intent == "tts_stop":
+        trigger_barge_in()
+        reply = "Stopped Sir."
+        speak(reply)
+
+    elif intent == "tts_repeat":
+        last = context.last_spoken_reply
+        if last:
+            speak(f"I said: {last}")
+        else:
+            speak("I haven't said anything yet Sir.")
+
+    elif intent == "tts_slower":
+        VOICE_RATE = max(100, VOICE_RATE - 20)
+        EDGE_RATE = "-22%"
+        reply = "I will speak slower from now on Sir."
+        speak(reply)
+
+    elif intent == "tts_faster":
+        VOICE_RATE = min(220, VOICE_RATE + 20)
+        EDGE_RATE = "+0%"
+        reply = "I will speak faster from now on Sir."
+        speak(reply)
+
+    elif intent == "tts_disable_speech":
+        context.spoken_responses_enabled = False
+        reply = "Silent mode enabled. Spoken voice responses are now muted."
+        print("vision:", reply)
+        set_vision_state("executing", result=reply)
+
+    elif intent == "tts_enable_speech":
+        context.spoken_responses_enabled = True
+        reply = "Voice responses have been re-enabled Sir."
+        speak(reply)
+
+    elif intent == "set_sensitivity":
+        lvl = args.get("level", "medium")
+        CONFIG["clap_sensitivity"] = lvl
+        reply = f"Clap detection sensitivity adjusted to {lvl} Sir."
+        speak(reply)
 
     elif intent == "sleep":
         reply = "Understood Sir. Going to sleep. Say Hey Vision to wake me up."
@@ -899,173 +1475,173 @@ def execute_intent(intent, args, original_command):
 
 def process_command(command):
     original = command.strip()
+    if not original:
+        return
     try:
-        raw, cmd = prepare_command(original)
-        intent, args = detect_intent(cmd, raw)
+        set_vision_state("processing", text=original)
 
+        # Tier 1: Fast Deterministic & Contextual Pattern Matching (< 2ms)
+        intent, args = match_deterministic_intent(original, context)
+
+        # Tier 2: Structured Ollama Intent Parsing for ambiguous natural language
+        if intent is None and len(original.split()) >= 2:
+            if is_ollama_service_running():
+                tier2 = parse_intent_with_ollama(original, context, ollama, OLLAMA_MODEL)
+                if tier2:
+                    intent, args = tier2
+
+        # Tier 3: Legacy pattern fallback
         if intent is None:
-            if len(cmd.split()) < 2:
-                print(f"Ignored short/noisy input: {cmd}")
+            raw, cmd = prepare_command(original)
+            legacy_intent, legacy_args = detect_intent(cmd, raw)
+            if legacy_intent:
+                intent, args = legacy_intent, legacy_args
+
+        # Tier 4: General conversational AI
+        if intent is None:
+            if len(original.split()) < 2:
+                print(f"[Ignored] Short/noisy input: {original}")
                 return
             intent, args = "chat", {}
 
-        print(f"[Intent] {intent} {args}")
+        print(f"[Routed Intent] {intent} -> {args}")
 
         if intent == "chat":
-            speak("Thinking Sir")
-            reply = ask_local_ai(original)
-            speak(reply)
+            was_interrupted, reply = stream_conversational_response(original)
         else:
             reply = execute_intent(intent, args, original)
-
-        save_conversation(original, reply)
+            if reply and not tts_manager.cancel_event.is_set():
+                set_vision_state("executing", text=original, result=str(reply or ""))
+                context.add_turn(original, reply or "", intent)
+                save_conversation(original, reply or "")
 
     except SystemExit:
         raise
     except Exception as e:
-        print("Command error:", e)
-        speak("Error Sir")
-        save_conversation(original, "Error Sir")
+        print("Command execution error:", e)
+        set_vision_state("error", text=original, result=str(e))
+        speak("I encountered an error processing that command Sir.")
 
 
-# ==================== DOUBLE CLAP DETECTION ==================== #
-def calculate_rms(data):
-    count = len(data) // 2
-    if count == 0:
-        return 0
-    shorts = struct.unpack(f"{count}h", data)
-    return math.sqrt(sum(s * s for s in shorts) / count)
+# ==================== CONTINUOUS CLAP & ACTIVATION ENGINE ==================== #
+clap_detector: Optional[ClapDetector] = None
+activation_trigger_event = threading.Event()
 
 
-def find_input_device_index(pa):
-    for i in range(pa.get_device_count()):
-        try:
-            info = pa.get_device_info_by_index(i)
-            if info.get("maxInputChannels", 0) > 0:
-                print(f"[Clap detector] Using device [{i}]: {info.get('name', 'Unknown')}")
-                return i
-        except Exception:
-            continue
-    print("[Clap detector] No valid input device found.")
-    return None
+def on_double_clap_detected():
+    """Fired immediately when a valid double-clap pattern is recognized."""
+    print("\n[Clap Detector] DOUBLE CLAP DETECTED! Activating Vision...")
+    set_vision_state("clap_detected")
+    play_activation_chime()
+    activation_trigger_event.set()
 
 
-def check_clap_device_available():
+def keyboard_activation_listener():
+    """Non-blocking keyboard activation listener: Press ENTER, SPACE, or any key to wake VISION immediately."""
     try:
-        pa = pyaudio.PyAudio()
-        idx = find_input_device_index(pa)
-        pa.terminate()
-        return idx is not None
-    except Exception as e:
-        print(f"[Clap detector] PyAudio check failed: {e}")
-        return False
+        if sys.platform.startswith("win"):
+            import msvcrt
+            while True:
+                if not conversation_mode and msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    print("\n[Manual Activation] Keyboard key detected! Activating Vision...")
+                    on_double_clap_detected()
+                time.sleep(0.04)
+        else:
+            import select
+            while True:
+                if not conversation_mode and sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                    sys.stdin.readline()
+                    print("\n[Manual Activation] Keyboard key detected! Activating Vision...")
+                    on_double_clap_detected()
+                time.sleep(0.04)
+    except Exception:
+        pass
 
 
-def detect_double_clap():
-    """Runs in a thread. After one successful double clap it releases the mic and exits."""
-    try:
-        pa = pyaudio.PyAudio()
-        device_index = find_input_device_index(pa)
-        if device_index is None:
-            pa.terminate()
-            return
-        stream = pa.open(format=AUDIO_FORMAT, channels=AUDIO_CHANNELS, rate=AUDIO_RATE, input=True,
-                         input_device_index=device_index, frames_per_buffer=AUDIO_CHUNK)
-    except Exception as e:
-        print(f"[Clap detector] Could not open audio stream: {e}")
-        return
-
-    def close_stream():
-        for fn in (stream.stop_stream, stream.close, pa.terminate):
-            try:
-                fn()
-            except Exception:
-                pass
-
-    print("Clap detector running. Clap twice to activate Vision...")
-    clap_count, first_clap_time, last_clap_time = 0, 0.0, 0.0
-
-    while True:
-        if initial_clap_activation_done:
-            close_stream()
-            return
-        try:
-            data = stream.read(AUDIO_CHUNK, exception_on_overflow=False)
-        except Exception:
-            time.sleep(0.01)
-            continue
-
-        now = time.time()
-        if calculate_rms(data) > CLAP_THRESHOLD:
-            if now - last_clap_time < CLAP_DEBOUNCE:
-                continue
-            last_clap_time = now
-            if clap_count == 0:
-                clap_count, first_clap_time = 1, now
-            else:
-                elapsed = now - first_clap_time
-                if elapsed < CLAP_MIN_INTERVAL:
-                    continue
-                if elapsed <= CLAP_MAX_INTERVAL:
-                    print("Double clap confirmed!")
-                    clap_trigger_event.set()
-                    close_stream()
-                    return
-                clap_count, first_clap_time = 1, now      # too slow: treat as a new first clap
-        elif clap_count == 1 and (now - first_clap_time) > CLAP_MAX_INTERVAL:
-            clap_count = 0
-
-
-# ==================== MAIN ==================== #
 def is_wake_phrase(text):
     t = re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", text.lower())).strip()
     return any(p in t for p in WAKE_PHRASES) or t in ("vision", "hey vision")
 
 
 def start_vision():
-    global initial_clap_activation_done
+    global clap_detector
 
     calibrate_microphone_once(force=True)
 
-    if check_clap_device_available():
-        print("Vision is idle. Waiting for a double clap (or press Ctrl+C to quit)...")
-        threading.Thread(target=detect_double_clap, daemon=True).start()
-        while not initial_clap_activation_done:
-            if clap_trigger_event.wait(timeout=0.3):
-                clap_trigger_event.clear()
-                initial_clap_activation_done = True
-                time.sleep(0.5)                       # let the clap thread release the mic
-                open_interface()
-                time.sleep(1.0)
-                speak(f"{time_greeting()} Sir. Vision online. All systems running at optimal performance. What is the plan?")
-                enter_active_mode()
-                run_active_listening_loop()
-    else:
-        print("Clap detection unavailable. Say 'Hey Vision' to activate.")
-        initial_clap_activation_done = True
+    # Initialize and start continuous background ClapDetector
+    clap_detector = ClapDetector(
+        device_index=CONFIG.get("microphone_device_index"),
+        sensitivity=CONFIG.get("clap_sensitivity", "medium"),
+        diagnostic_mode=CONFIG.get("debug_audio_meter", False),
+        on_double_clap=on_double_clap_detected
+    )
+    clap_detector.start()
 
-    print("[Idle] Say 'Hey Vision' to resume listening.")
+    # Start non-blocking keyboard listener thread
+    threading.Thread(target=keyboard_activation_listener, daemon=True).start()
+
+    first_boot = True
+    print("\n" + "=" * 60)
+    print(">> VISION AI ACTIVE IN BACKGROUND // DOUBLE CLAP TO ACTIVATE <<")
+    print("   (Or press ENTER/SPACE to wake instantly)")
+    print("=" * 60 + "\n")
+
     while True:
         try:
-            word = listen_for_wake_word()
-            if word and is_wake_phrase(word):
+            set_vision_state("monitoring")
+            if clap_detector:
+                clap_detector.resume()
+
+            # Wait for double-clap or keyboard activation
+            while True:
+                if activation_trigger_event.wait(timeout=0.3):
+                    activation_trigger_event.clear()
+                    break
+
+            # Transition from Standby to Active Listening
+            if clap_detector:
+                clap_detector.pause()
+
+            set_vision_state("activating")
+            time.sleep(0.2)
+            open_interface()
+
+            if first_boot:
+                speak(f"{time_greeting()} Sir. Vision online. All systems running at optimal performance. What is the plan?")
+                first_boot = False
+            else:
                 speak("Yes Sir. I am listening.")
-                enter_active_mode()
-                run_active_listening_loop()
+
+            enter_active_mode()
+            run_active_listening_loop()
+
         except SystemExit:
             break
         except Exception as e:
-            print("Main loop error:", e)
-            reset_audio_pipeline(f"main loop error: {e}")
+            print("Main loop recovery warning:", e)
+            reset_audio_pipeline(f"main loop recovery: {e}")
             time.sleep(0.5)
 
 
 def main():
+    # 1. Enforce single-instance execution
+    if not acquire_instance_lock():
+        print("[VISION AI] Another instance is already running in the background. Exiting cleanly.")
+        return
+
     try:
+        # 2. Start background voice reminders scheduler
+        start_reminder_scheduler(notify_callback=speak)
+
+        # 3. Enter always-active main engine
         start_vision()
     except (SystemExit, KeyboardInterrupt):
         pass
     finally:
+        if clap_detector:
+            clap_detector.stop()
+        release_instance_lock()
         shutdown_app()
 
 
