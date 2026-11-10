@@ -26,3 +26,5 @@ from modules.tts_stream import (
 from modules.chat import (
     detect_conversation_mode, build_system_prompt, prepare_chat_messages, stream_ollama_tokens
 )
+from modules.hand_tracking import HandTracker, TrackingTelemetry, SingleHandInfo
+from modules.particles import ParticleSystem, RippleWave

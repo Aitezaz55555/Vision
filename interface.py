@@ -14,6 +14,9 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matpl
 import cv2
 import numpy as np
 
+from modules.hand_tracking import HandTracker, TrackingTelemetry, SingleHandInfo
+from modules.particles import ParticleSystem
+
 try:
     import mediapipe as mp
     HAS_MP = True
@@ -251,8 +254,10 @@ def project(P, R, camd):
     c = P @ R.T
     depth = np.maximum(camd + c[:, 2], 0.12)
     s = F / depth
-    x = np.clip(W / 2 + c[:, 0] * s, -30000, 30000)
-    y = np.clip(H / 2 - c[:, 1] * s, -30000, 30000)
+    ox = S.get("offset_x", 0.0)
+    oy = S.get("offset_y", 0.0)
+    x = np.clip(W / 2 + c[:, 0] * s + ox, -30000, 30000)
+    y = np.clip(H / 2 - c[:, 1] * s + oy, -30000, 30000)
     return x, y, s, c[:, 2]
 
 
@@ -384,6 +389,9 @@ def draw_status_panel(layer, glow, t):
         "error": "SYSTEM ERROR",
     }
     status_text = state_labels.get(st, f"STATUS: {st.upper()}")
+    gesture_st = S.get("gesture_label", "")
+    if gesture_st:
+        status_text = f"{status_text}  //  {gesture_st}"
 
     pulse = 0.82 + 0.18 * math.sin(t * 3.5 if st in ("listening", "speaking", "generating", "clap_detected") else t * 1.5)
     fs = 0.52 * K
@@ -446,8 +454,46 @@ def get_bg(k=0.0):
     return cv2.addWeighted(blue, 1.0 - k, red, k, 0)
 
 
-def render(yaw, pitch, zoom, t):
-    R = rot_x(pitch) @ rot_y(yaw)
+def draw_fingertip_beacons(layer, glow, fingertips, center, K):
+    """Draws holographic tracking reticles and targeting beams at active fingertips."""
+    for pt in fingertips:
+        fx = int(pt[0] * W)
+        fy = int(pt[1] * H)
+        if 0 <= fx < W and 0 <= fy < H:
+            r1 = max(8, int(13 * K))
+            cv2.circle(glow, (fx, fy), r1, C_BRIGHT, max(2, int(2 * K)), cv2.LINE_AA)
+            cv2.circle(layer, (fx, fy), r1, col(C_BRIGHT, 0.85), 1, cv2.LINE_AA)
+            cv2.circle(layer, (fx, fy), max(2, int(2.5 * K)), (255, 255, 255), -1, cv2.LINE_AA)
+            tick = int(5 * K)
+            cv2.line(layer, (fx - r1 - tick, fy), (fx - r1 + 2, fy), C_BRIGHT, 1, cv2.LINE_AA)
+            cv2.line(layer, (fx + r1 - 2, fy), (fx + r1 + tick, fy), C_BRIGHT, 1, cv2.LINE_AA)
+            cv2.line(layer, (fx, fy - r1 - tick), (fx, fy - r1 + 2), C_BRIGHT, 1, cv2.LINE_AA)
+            cv2.line(layer, (fx, fy + r1 - 2), (fx, fy + r1 + tick), C_BRIGHT, 1, cv2.LINE_AA)
+            # Subtle targeting beam to center
+            cv2.line(layer, (fx, fy), center, col(C_MID, 0.22), 1, cv2.LINE_AA)
+
+
+def draw_camera_pip(img, preview_frame, K):
+    """Draws a sleek semi-transparent sci-fi tracking HUD box in top-left corner."""
+    if preview_frame is None or not S.get("show_camera", True):
+        return
+    pip_w = int(170 * K)
+    pip_h = int(128 * K)
+    if pip_w <= 30 or pip_h <= 30 or pip_w + 30 >= W or pip_h + 30 >= H:
+        return
+    small_cam = cv2.resize(preview_frame, (pip_w, pip_h), interpolation=cv2.INTER_AREA)
+    tinted = (small_cam.astype(np.float32) * [1.1, 0.9, 0.6]).clip(0, 255).astype(np.uint8)
+    x1, y1 = int(24 * K), int(24 * K)
+    x2, y2 = x1 + pip_w, y1 + pip_h
+    img[y1:y2, x1:x2] = cv2.addWeighted(img[y1:y2, x1:x2], 0.35, tinted, 0.65, 0)
+    cv2.rectangle(img, (x1, y1), (x2, y2), C_MID, 1, cv2.LINE_AA)
+    lbl = "HAND OPTICS // ACTIVE (C: toggle)"
+    cv2.putText(img, lbl, (x1 + 4, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.30 * K, C_BRIGHT, 1, cv2.LINE_AA)
+
+
+def render(yaw, pitch, zoom, t, particle_system=None, telemetry=None):
+    roll = S.get("roll", 0.0)
+    R = rot_z(roll) @ rot_x(pitch) @ rot_y(yaw)
     camd = 4.0 / zoom
     base = F / 4.0
     T1 = max(1, round(0.6 * K))      # fine single line
@@ -498,11 +544,12 @@ def render(yaw, pitch, zoom, t):
         shaded_ring(layer, glow_layer, po, R, camd, C_MID, T1, 3, 0.15, 0.55,
                     t=t + i * 0.37, speed=sp, tail=0.14)
 
-    # ---- centre energy beat ----
-    beat = 0.5 + 0.5 * math.sin(t * 3.4)
+    # ---- centre energy beat modulated by hand collapse/expansion ----
+    collapse = particle_system.collapse_factor if particle_system else 1.0
+    beat = 0.5 + 0.5 * math.sin(t * (4.8 if collapse < 0.6 else 3.4))
     beat = beat ** 1.3
-    pulse = 0.5 + 0.9 * beat                 # 0.5 .. 1.4
-    core_k = 0.7 + 0.6 * beat                # wireframe core size
+    pulse = (0.5 + 0.9 * beat) * max(0.35, collapse)
+    core_k = (0.7 + 0.6 * beat) * collapse
 
     # core (spinning wireframe)
     Rc = rot_y(t * 0.6) @ rot_x(t * 0.35)
@@ -517,7 +564,8 @@ def render(yaw, pitch, zoom, t):
 
     cx, cy, cs, _ = project(np.zeros((1, 3)), R, camd)
     center = (int(cx[0]), int(cy[0]))
-    crystal_r = max(5, int(0.15 * cs[0] * pulse))
+    crystal_r = max(4, int(0.15 * cs[0] * pulse * collapse))
+
     # Pulsing energy rings around the crystal
     for mult, b_, cc in ((2.8, 0.72, C_MID), (1.45, 0.92, C_BRIGHT)):
         rr = max(int(crystal_r * mult), 18 if mult > 2 else 10)
@@ -525,6 +573,7 @@ def render(yaw, pitch, zoom, t):
         cv2.circle(glow_layer, center, rr, col(cc, b_ * pulse), max(3, T2 * 2), cv2.LINE_AA)
     cv2.circle(glow_layer, center, int(crystal_r * (0.8 + 0.9 * beat)),
                col(C_BRIGHT, 0.12 + 0.30 * beat), -1, cv2.LINE_AA)
+
     # shockwave rings: expand from the centre and fade out
     for k in range(3):
         ph = (t * 0.8 + k / 3.0) % 1.0
@@ -587,6 +636,30 @@ def render(yaw, pitch, zoom, t):
         cv2.putText(layer, LAB_TXT[i], pos, cv2.FONT_HERSHEY_SIMPLEX, fs,
                     col(mix(C_TEXT, C_WHITE, 0.55), min(1.4, b * 1.35)), th, cv2.LINE_AA)
 
+    # Render interactive particle system
+    if particle_system:
+        particle_system.render(layer, glow_layer, R, camd, base, W, H, K, C_BRIGHT, C_MID)
+
+    # Render fingertip beacons
+    if telemetry and telemetry.fingertip_points:
+        draw_fingertip_beacons(layer, glow_layer, telemetry.fingertip_points, center, K)
+
+    # Special two-fingers focused beam
+    if telemetry and telemetry.active_gesture == "TWO_FINGERS" and len(telemetry.fingertip_points) >= 2:
+        p1 = (int(telemetry.fingertip_points[0][0] * W), int(telemetry.fingertip_points[0][1] * H))
+        p2 = (int(telemetry.fingertip_points[1][0] * W), int(telemetry.fingertip_points[1][1] * H))
+        cv2.line(glow_layer, p1, p2, col(C_BRIGHT, 1.4), max(3, int(3 * K)), cv2.LINE_AA)
+        cv2.line(layer, p1, p2, (255, 255, 255), max(1, int(1.5 * K)), cv2.LINE_AA)
+
+    # Special dual-palm resonance bridge
+    if telemetry and telemetry.active_gesture == "DUAL_OPEN_PALMS" and len(telemetry.palm_points) >= 2:
+        p1 = (int(telemetry.palm_points[0][0] * W), int(telemetry.palm_points[0][1] * H))
+        p2 = (int(telemetry.palm_points[1][0] * W), int(telemetry.palm_points[1][1] * H))
+        cv2.line(glow_layer, p1, p2, col(C_WHITE, 1.3), max(4, int(4 * K)), cv2.LINE_AA)
+        cv2.line(layer, p1, p2, col(C_BRIGHT, 1.0), max(2, int(2 * K)), cv2.LINE_AA)
+        mid = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
+        cv2.circle(glow_layer, mid, int(45 * K), C_BRIGHT, max(3, int(3 * K)), cv2.LINE_AA)
+
     # HUD arcs around the sphere
     draw_hud(layer, glow_layer, center, cs[0], t, zoom)
     draw_title(layer, glow_layer, t)
@@ -610,244 +683,28 @@ def render(yaw, pitch, zoom, t):
     return out
 
 
-# ------------------------------------------------------------------ hand tracking
-HAND_CONNECTIONS = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
-                    (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (17, 18),
-                    (18, 19), (19, 20), (0, 17)]
-MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-             "hand_landmarker/float16/1/hand_landmarker.task")
-
-
-def download_model(path):
-    """python.org Python on macOS often fails with CERTIFICATE_VERIFY_FAILED -> try 3 methods."""
-    tmp = path + ".part"
-    tries = []
-
-    def plain():
-        urllib.request.urlretrieve(MODEL_URL, tmp)
-
-    def with_certifi():
-        import ssl
-        import certifi
-        ctx = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(MODEL_URL, context=ctx, timeout=60) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f)
-
-    def with_curl():                                   # curl is always available on macOS / Windows
-        curl_cmd = "curl.exe" if sys.platform.startswith("win") else "curl"
-        subprocess.run([curl_cmd, "-L", "-f", "-s", "-o", tmp, MODEL_URL], check=True, timeout=120)
-
-    for fn in (plain, with_certifi, with_curl):
-        try:
-            fn()
-            if os.path.exists(tmp) and os.path.getsize(tmp) > 1_000_000:
-                os.replace(tmp, path)
-                return
-        except Exception as e:
-            tries.append(f"{fn.__name__}: {e!r}")
-    raise RuntimeError("model download failed: " + " | ".join(tries))
-
-
-def get_model():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
-    if os.path.exists(path) and os.path.getsize(path) < 1_000_000:   # incomplete download
-        os.remove(path)
-    if not os.path.exists(path):
-        print("Downloading hand model (~8 MB)...")
-        download_model(path)
-    return path
-
-
-def open_camera():
-    """Open a webcam on the main thread before creating any OpenCV window."""
-    if sys.platform.startswith("win"):
-        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
-    elif sys.platform == "darwin":
-        avfoundation = getattr(cv2, "CAP_AVFOUNDATION", None)
-        backends = [cv2.CAP_ANY] if avfoundation is None else [avfoundation, cv2.CAP_ANY]
-    else:
-        backends = [cv2.CAP_ANY]
-
-    for idx in range(5):
-        for be in backends:
-            cap = cv2.VideoCapture(idx, be)
-            if not cap.isOpened():
-                cap.release()
-                continue
-            # Give the OS time to grant access and deliver the first frame.
-            t_end = time.time() + 5.0
-            while time.time() < t_end:
-                ok, frm = cap.read()
-                if ok and frm is not None and frm.size:
-                    print(f"Camera found (index {idx}, backend {be})")
-                    return cap
-                time.sleep(0.05)
-            cap.release()
-    return None
-
-
-class Hands:
-    """Camera opens on the MAIN thread (before the window). Frame reading + MediaPipe run in a thread."""
-
-    def __init__(self):
-        self.ok = False
-        self.status = "OPENING CAMERA..."
-        self.lock = threading.Lock()
-        self.running = True
-        self.frame = None
-        self.n = 0
-        self.acc_dx = self.acc_dy = 0.0
-        self.acc_zoom = 1.0
-        self.prev_palm = None
-        self.prev_dist = None
-        self.palm_s = None
-        self.detect = None
-        print("Opening camera...")
-        self.cap = open_camera()
-        if self.cap is None:
-            self.status = "CAMERA NOT FOUND"
-            print("Camera could not be opened (hand tracking disabled; mouse control still works). "
-                  "On macOS: System Settings > Privacy & Security > Camera -> enable your terminal/IDE, "
-                  "then fully quit and reopen it. Close apps like Zoom/FaceTime that may be using the camera.")
-            return
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.ok = True
-        self.status = "LOADING HAND MODEL..."
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def _load_model(self):
-        if not HAS_MP:
-            self.status = "MEDIAPIPE NOT INSTALLED"
-            print("mediapipe is not installed (hand tracking disabled):  pip install -U mediapipe")
-            return False
-        try:
-            from mediapipe.tasks import python as mp_python
-            from mediapipe.tasks.python import vision
-            model = get_model()
-            opts = vision.HandLandmarkerOptions(
-                base_options=mp_python.BaseOptions(model_asset_path=model),
-                running_mode=vision.RunningMode.VIDEO, num_hands=2,
-                min_hand_detection_confidence=0.38, min_hand_presence_confidence=0.38,
-                min_tracking_confidence=0.42)
-            lm = vision.HandLandmarker.create_from_options(opts)
-            self._t0 = time.time()
-            self._last_ts = 0
-
-            def det(rgb):
-                ts = max(self._last_ts + 1, int((time.time() - self._t0) * 1000))
-                self._last_ts = ts
-                res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
-                return res.hand_landmarks
-            self.detect = det
-            return True
-        except Exception as e:
-            self.status = "HAND MODEL ERROR (see terminal)"
-            print("Hand tracking failed to start:", repr(e))
-            print("Download the model manually and place it next to interface.py:\n  ", MODEL_URL)
-            return False
-
-    def _run(self):
-        # Keep reading frames immediately; model download/init can take several seconds.
-        threading.Thread(target=self._load_model_background, daemon=True).start()
-        try:
-            while self.running:
-                ok, frame = self.cap.read()
-                if not ok or frame is None:
-                    time.sleep(0.02)
-                    continue
-                frame = cv2.flip(frame, 1)
-                if self.detect is not None:
-                    self._process(frame)
-                else:
-                    with self.lock:
-                        self.frame = frame
-        except Exception as e:
-            self.status = "TRACKER CRASHED (see terminal)"
-            print("Tracker error:", repr(e))
-
-    def _load_model_background(self):
-        try:
-            if self._load_model():
-                self.status = "SHOW HANDS"
-        except Exception as e:
-            self.status = "HAND MODEL ERROR (see terminal)"
-            print("Hand model load error:", repr(e))
-
-    @staticmethod
-    def d(a, b):
-        return math.hypot(a.x - b.x, a.y - b.y)
-
-    def _process(self, frame):
-        rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        hands = self.detect(rgb)
-        fh, fw = frame.shape[:2]
-        info = []
-        for lm in hands:
-            size = max(self.d(lm[0], lm[9]), 1e-4)
-            pinch = self.d(lm[4], lm[8]) / size < 0.55           # loose threshold = easy pinch
-            pp = ((lm[4].x + lm[8].x) / 2, (lm[4].y + lm[8].y) / 2)
-            info.append((pinch, (lm[9].x, lm[9].y), pp))
-            for a, b in HAND_CONNECTIONS:
-                cv2.line(frame, (int(lm[a].x * fw), int(lm[a].y * fh)),
-                         (int(lm[b].x * fw), int(lm[b].y * fh)), (255, 255, 255), 2)
-            for p in lm:
-                cv2.circle(frame, (int(p.x * fw), int(p.y * fh)), 3, (255, 255, 255), -1)
-            if pinch:
-                cv2.circle(frame, (int(pp[0] * fw), int(pp[1] * fh)), 10, (0, 255, 255), 2)
-
-        dx = dy = 0.0
-        zf = 1.0
-        if len(info) == 2 and info[0][0] and info[1][0]:          # both pinching -> zoom
-            dist = math.hypot(info[0][2][0] - info[1][2][0], info[0][2][1] - info[1][2][1])
-            if self.prev_dist:
-                zf = max(0.7, min(1.4, (dist / self.prev_dist) ** 1.8))
-            self.prev_dist = dist
-            self.prev_palm = None
-            self.palm_s = None
-        else:
-            self.prev_dist = None
-            if len(info) == 1:                                    # one hand -> spin
-                p = info[0][1]
-                self.palm_s = p if self.palm_s is None else (
-                    self.palm_s[0] * 0.5 + p[0] * 0.5, self.palm_s[1] * 0.5 + p[1] * 0.5)
-                if self.prev_palm is not None:
-                    dx = self.palm_s[0] - self.prev_palm[0]
-                    dy = self.palm_s[1] - self.prev_palm[1]
-                    if abs(dx) < 0.0015 and abs(dy) < 0.0015:     # ignore hand jitter
-                        dx = dy = 0.0
-                self.prev_palm = self.palm_s
-            else:
-                self.prev_palm = None
-                self.palm_s = None
-
-        with self.lock:
-            self.frame = frame
-            self.n = len(info)
-            self.acc_dx += dx
-            self.acc_dy += dy
-            self.acc_zoom *= zf
-            self.status = "SHOW HANDS" if not info else f"{len(info)} HAND(S)"
-
-    def poll(self):
-        """returns (preview_frame, (dx, dy), zoom_factor, n_hands) accumulated since the last call"""
-        with self.lock:
-            out = (None if self.frame is None else self.frame.copy(),
-                   (self.acc_dx, self.acc_dy), self.acc_zoom, self.n)
-            self.acc_dx = self.acc_dy = 0.0
-            self.acc_zoom = 1.0
-        return out
-
-    def stop(self):
-        self.running = False
-        time.sleep(0.1)
-        if self.cap is not None:
-            self.cap.release()
-
-
 # ------------------------------------------------------------------ app state / UI
-S = dict(yaw=0.0, pitch=0.15, vyaw=AUTO_SPEED, vpitch=0.0, zoom=1.0, zoom_t=1.0,
-         drag=False, lx=0, ly=0, mdx=0.0, mdy=0.0)
+S = dict(
+    yaw=0.0,
+    pitch=0.15,
+    roll=0.0,
+    vyaw=AUTO_SPEED,
+    vpitch=0.0,
+    vroll=0.0,
+    zoom=1.0,
+    zoom_t=1.0,
+    offset_x=0.0,
+    offset_y=0.0,
+    target_offset_x=0.0,
+    target_offset_y=0.0,
+    drag=False,
+    lx=0,
+    ly=0,
+    mdx=0.0,
+    mdy=0.0,
+    show_camera=True,
+    gesture_label="",
+)
 
 
 def clampz(z):
@@ -860,7 +717,19 @@ def press(name):
     elif name == "-":
         S["zoom_t"] = clampz(S["zoom_t"] / 1.25)
     else:
-        S.update(yaw=0.0, pitch=0.15, zoom_t=1.0, vyaw=AUTO_SPEED, vpitch=0.0)
+        S.update(
+            yaw=0.0,
+            pitch=0.15,
+            roll=0.0,
+            zoom_t=1.0,
+            vyaw=AUTO_SPEED,
+            vpitch=0.0,
+            vroll=0.0,
+            offset_x=0.0,
+            offset_y=0.0,
+            target_offset_x=0.0,
+            target_offset_y=0.0,
+        )
 
 
 def on_mouse(ev, x, y, flags, _):
@@ -913,43 +782,98 @@ def sync_render_size():
 
 
 def main():
-    tracker = Hands()
+    tracker = HandTracker()
+    particle_system = ParticleSystem(count=240)
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WIN, W, H)
     cv2.setMouseCallback(WIN, on_mouse)
     full = False                       # press F to toggle fullscreen
     t0 = last = time.time()
+    last_burst_time = 0.0
+
     while True:
         frame_start = time.time()
         now = frame_start
-        dt = max(1e-3, min(0.1, now - last))
+        dt = max(1e-3, min(0.08, now - last))
         last = now
 
-        cam, rot, zf, nh = tracker.poll()
-        if abs(zf - 1.0) > 1e-4:
-            S["zoom_t"] = clampz(S["zoom_t"] * zf)
+        telemetry = tracker.poll()
 
-        dx, dy = rot
-        dx += S["mdx"]
-        dy += S["mdy"]
+        # Update gesture status & dynamics from telemetry
+        if telemetry.hands_count > 0:
+            S["gesture_label"] = telemetry.active_gesture if telemetry.active_gesture != "NONE" else f"{telemetry.hands_count} HAND(S)"
+
+            # Smooth palm roll/tilt
+            target_roll = -telemetry.hand_roll * 0.8
+            S["roll"] += (target_roll - S["roll"]) * min(1.0, dt * 5.0)
+
+            # Hologram translation tracking primary palm position
+            if telemetry.palm_points:
+                px, py, _ = telemetry.palm_points[0]
+                S["target_offset_x"] = (px - 0.5) * W * 0.45
+                S["target_offset_y"] = (py - 0.5) * H * 0.45
+
+            # Zoom factor from two-hand pinch / depth
+            if abs(telemetry.zoom_factor - 1.0) > 1e-4:
+                S["zoom_t"] = clampz(S["zoom_t"] * telemetry.zoom_factor)
+
+            # Open palm burst
+            if telemetry.active_gesture in ("OPEN_PALM", "DUAL_OPEN_PALMS"):
+                if now - last_burst_time > 0.4:
+                    particle_system.trigger_burst(0.85)
+                    last_burst_time = now
+
+            # Gesture events (e.g. Swipes)
+            if telemetry.gesture_event == "SWIPE_RIGHT":
+                S["vyaw"] += 3.5
+                cx = W / 2 + S["offset_x"]
+                cy = H / 2 + S["offset_y"]
+                particle_system.trigger_ripple(cx, cy, max_radius=320.0, color=(255, 235, 140))
+            elif telemetry.gesture_event == "SWIPE_LEFT":
+                S["vyaw"] -= 3.5
+                cx = W / 2 + S["offset_x"]
+                cy = H / 2 + S["offset_y"]
+                particle_system.trigger_ripple(cx, cy, max_radius=320.0, color=(140, 235, 255))
+        else:
+            S["gesture_label"] = ""
+            S["target_offset_x"] = 0.0
+            S["target_offset_y"] = 0.0
+            S["roll"] += (0.0 - S["roll"]) * min(1.0, dt * 4.0)
+
+        # Smooth screen translation
+        S["offset_x"] += (S["target_offset_x"] - S["offset_x"]) * min(1.0, dt * 6.5)
+        S["offset_y"] += (S["target_offset_y"] - S["offset_y"]) * min(1.0, dt * 6.5)
+
+        # Update 3D particle dynamics
+        particle_system.update(
+            dt,
+            fingertips_3d=telemetry.fingertip_points,
+            palm_centers_3d=telemetry.palm_points,
+            gesture=telemetry.active_gesture
+        )
+
+        # Rotational inputs (hand drag + mouse drag)
+        dx = telemetry.drag_dx + S["mdx"]
+        dy = telemetry.drag_dy + S["mdy"]
         S["mdx"] = S["mdy"] = 0.0
 
-        if abs(dx) > 1e-5 or abs(dy) > 1e-5:         # manual spin
+        if abs(dx) > 1e-5 or abs(dy) > 1e-5:         # active manual manipulation
             a_y, a_p = -dx * 6.0, -dy * 5.0
             S["yaw"] += a_y
             S["pitch"] += a_p
             S["vyaw"] = 0.6 * S["vyaw"] + 0.4 * (a_y / dt)
             S["vpitch"] = 0.6 * S["vpitch"] + 0.4 * (a_p / dt)
-        else:                                         # inertia -> back to slow auto rotation
+        else:                                         # inertia -> decay to slow ambient spin
             k = min(1.0, dt * 1.5)
             S["vyaw"] += (AUTO_SPEED - S["vyaw"]) * k
             S["vpitch"] += (0.0 - S["vpitch"]) * k
             S["yaw"] += S["vyaw"] * dt
             S["pitch"] += S["vpitch"] * dt
-        S["pitch"] = max(-1.4, min(1.4, S["pitch"]))
-        S["zoom"] += (S["zoom_t"] - S["zoom"]) * min(1.0, dt * 8)
 
-        # Red (smooth fade) while Vision speaks, blue otherwise
+        S["pitch"] = max(-1.4, min(1.4, S["pitch"]))
+        S["zoom"] += (S["zoom_t"] - S["zoom"]) * min(1.0, dt * 8.0)
+
+        # Red palette transition while Vision is speaking
         target = 1.0 if vision_speaking() else 0.0
         if abs(target - RED_K[0]) > 0.002:
             RED_K[0] += (target - RED_K[0]) * min(1.0, dt * 7.0)
@@ -958,14 +882,23 @@ def main():
             RED_K[0] = target
             set_palette(target)
 
-        img = render(S["yaw"], S["pitch"], S["zoom"], now - t0)
+        # Render hologram frame
+        img = render(S["yaw"], S["pitch"], S["zoom"], now - t0,
+                     particle_system=particle_system, telemetry=telemetry)
         draw_scanline(img, now - t0)
+
+        # Camera picture-in-picture tracking HUD
+        if S.get("show_camera", True) and telemetry.preview_frame is not None:
+            draw_camera_pip(img, telemetry.preview_frame, K)
+
         cv2.imshow(WIN, img)
 
         k = cv2.waitKey(1) & 0xFF
         sync_render_size()
         if k in (27, ord("q")):
             break
+        elif k in (ord("c"), ord("C")):
+            S["show_camera"] = not S.get("show_camera", True)
         elif k in (ord("+"), ord("=")):
             press("+")
         elif k in (ord("-"), ord("_")):
@@ -980,7 +913,8 @@ def main():
             full = not full
             cv2.setWindowProperty(WIN, cv2.WND_PROP_FULLSCREEN,
                                   cv2.WINDOW_FULLSCREEN if full else cv2.WINDOW_NORMAL)
-        # Note: WND_PROP_VISIBLE can report 0 spuriously on macOS, so Q/Esc is the shutdown path.
+
+        # Maintain smooth target framerate (45-60 FPS)
         time.sleep(max(0.0, 1.0 / 45.0 - (time.time() - frame_start)))
 
     tracker.stop()

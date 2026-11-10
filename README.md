@@ -1,22 +1,53 @@
-# Vision – Voice Assistant with a Holographic Interface
+# Vision – AI Voice Assistant with Interactive Holographic Interface
 
-Vision is a simple voice assistant for **macOS**, written in Python. Clap twice (or say **"Hey Vision"**), and an animated holographic interface opens. It stays blue while idle and turns **red while Vision is speaking**. You can talk to it in English, Hindi or Hinglish.
+Vision is an intelligent voice assistant with a futuristic, animated 3D holographic interface, built for **Windows 11** and **macOS** in Python. Activate it with a **double clap** or the wake phrase **"Hey Vision"**, and an immersive 3D holographic interface appears with live hand tracking, physics-driven particle swarms, and neural voice capabilities.
 
-## Features
+Vision stays blue while idle, transitions to glowing red while speaking, and provides instant conversational responses and Windows system automation.
 
-- **Activation:** double clap, or the wake phrase "Hey Vision"
-- **Interface (`interface.py`):** animated hologram, optional hand-gesture control (rotate with one hand, zoom with a two-hand pinch)
-- **Basic commands:**
-  - Open YouTube, Safari, Chrome
-  - Search on Google / YouTube
-  - Play a song (opens YouTube results)
-  - Take a screenshot or a photo
-  - Create a folder on the Desktop / open a folder
-  - Volume up / down / set / mute, battery status
-  - Open / close the interface
-- **Memory:** remembers your name, saves notes, shows recent conversations (`memory.json`)
-- **AI chat:** any other question is answered by a local LLM through [Ollama](https://ollama.com) – no API key needed
-- **Voice:** natural neural voice via `edge-tts` (falls back to the macOS `say` voice)
+---
+
+## Key Features
+
+- **Activation:** Dual-clap detection or wake phrase `"Hey Vision"` (with background monitoring and hotkey fallback).
+- **Holographic 3D Interface (`interface.py`):**
+  - Spinning 3D icosphere core, gyroscope rings, orbital particle swarms, and depth-shaded bloom.
+  - Asynchronous MediaPipe hand tracking running in a background thread for buttery-smooth 45–60 FPS rendering.
+  - Adaptive velocity-aware landmark smoothing (`AdaptiveSmoother`) that eliminates static jitter while maintaining high agility during fast motions.
+  - Real-time 3D particle simulation with gravitational attraction to fingertips, singularity collapse, and explosive radial bursts.
+  - Picture-in-Picture (PIP) sci-fi camera HUD overlay toggleable with `C`.
+- **Intelligent Windows 11 Automation:**
+  - Launch, switch, and close applications (Chrome, VS Code, Notepad, Calculator, Explorer, etc.).
+  - Windows volume control, battery monitoring, screenshots, and webcam capture.
+  - USB drive portability and background startup automation (`run_vision_silent.vbs`, `manage_startup.bat`).
+- **Conversational AI & Interruption:**
+  - Powered by local Ollama LLMs (`llama3`, `deepseek-r1`, `mistral`) with zero cloud lock-in.
+  - Instant voice barge-in / interruption: speak or double-clap while Vision is talking to immediately halt speech and issue a new command.
+- **Natural Neural Voice:** High-fidelity TTS via `edge-tts` with fallback to Windows SAPI5 / pyttsx3.
+- **Persistent Memory:** Remembers user name, context, notes, and conversation history (`memory.json`).
+
+---
+
+## Holographic Hand Gestures & Interaction
+
+The interface connects hand landmarks directly to the 3D hologram and quantum particle swarm:
+
+| Gesture / Input | Effect in Interface |
+|---|---|
+| **Palm Movement (X / Y)** | Translates the entire 3D hologram smoothly across the screen following your hand |
+| **Palm Roll / Tilt** | Tilts and rolls the hologram rings and core along the palm axis |
+| **`OPEN_PALM`** | Triggers an explosive radial energy burst and expands core diameter |
+| **`CLOSED_FIST`** | Singularity collapse: pulls particle swarm and core into a concentrated high-density state |
+| **`PINCH` / Dual Pinch** | Precision reticle targeting; two-hand pinch dynamically zooms the hologram in and out |
+| **`TWO_FINGERS`** | Emits a high-energy glowing laser beam between your index and middle fingertips |
+| **`INDEX_POINT`** | Highlights single-point tracking beacon with targeting lines |
+| **`SWIPE_LEFT` / `SWIPE_RIGHT`** | Generates an instant rotational spin impulse and outward holographic shockwave ripples |
+| **`DUAL_OPEN_PALMS`** | Connects both hands with an energy resonance bridge and pulsating central orb |
+| **Key `C`** | Toggles the sci-fi webcam PIP preview in the top-left corner |
+| **Mouse Drag & Scroll** | Manual camera rotation and zoom controls |
+| **Key `+` / `-`** | Step zoom in / zoom out |
+| **Key `[` / `]`** | Adjust bloom glow intensity |
+| **Key `R` / `F`** | Reset orientation / Toggle fullscreen |
+| **Key `Q` / `Esc`** | Exit interface |
 
 ## Project structure
 

@@ -13,3 +13,4 @@ data/photos/*
 !data/photos/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+scratch/
