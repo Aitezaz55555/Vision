@@ -69,8 +69,17 @@ try {
     $wshShell = New-Object -ComObject WScript.Shell
     $shortcut = $wshShell.CreateShortcut($shortcutPath)
 
-    # 4. Configure Shortcut properties (Silent clean launch without console flash)
-    if (Test-Path $vbsLauncher) {
+    $pythonwExe = Join-Path $scriptDir ".venv\Scripts\pythonw.exe"
+    if (-not (Test-Path $pythonwExe)) {
+        $pythonwExe = Join-Path $scriptDir ".venv\pythonw.exe"
+    }
+    $visionScript = Join-Path $scriptDir "vision.py"
+
+    # 4. Configure Shortcut properties (Direct windowless launch without console flash)
+    if ((Test-Path $pythonwExe) -and (Test-Path $visionScript)) {
+        $shortcut.TargetPath = $pythonwExe
+        $shortcut.Arguments = "`"$visionScript`""
+    } elseif (Test-Path $vbsLauncher) {
         $shortcut.TargetPath = $wscriptExe
         $shortcut.Arguments = "`"$vbsLauncher`""
     } else {
@@ -92,7 +101,10 @@ try {
     $localShortcutPath = Join-Path $scriptDir "VISION AI.lnk"
     try {
         $localShortcut = $wshShell.CreateShortcut($localShortcutPath)
-        if (Test-Path $vbsLauncher) {
+        if ((Test-Path $pythonwExe) -and (Test-Path $visionScript)) {
+            $localShortcut.TargetPath = $pythonwExe
+            $localShortcut.Arguments = "`"$visionScript`""
+        } elseif (Test-Path $vbsLauncher) {
             $localShortcut.TargetPath = $wscriptExe
             $localShortcut.Arguments = "`"$vbsLauncher`""
         } else {

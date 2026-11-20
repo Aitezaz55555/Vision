@@ -9,6 +9,14 @@ import threading
 import time
 import urllib.request
 
+if sys.platform == "win32":
+    try:
+        import ctypes
+        # Suppress OS-level Bad Image and Critical Error modal dialogs so Python handles them cleanly
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    except Exception:
+        pass
+
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
 
 import cv2
@@ -16,12 +24,6 @@ import numpy as np
 
 from modules.hand_tracking import HandTracker, TrackingTelemetry, SingleHandInfo
 from modules.particles import ParticleSystem
-
-try:
-    import mediapipe as mp
-    HAS_MP = True
-except Exception:  # mediapipe not installed
-    HAS_MP = False
 
 # Resolution:  --sd (1280x720) | default (1280x800) | --hd (1920x1080)
 if "--sd" in sys.argv:

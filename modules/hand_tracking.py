@@ -18,11 +18,19 @@ from typing import List, Tuple, Dict, Optional, Any
 import cv2
 import numpy as np
 
-try:
-    import mediapipe as mp
-    HAS_MP = True
-except Exception:
-    HAS_MP = False
+mp = None
+HAS_MP = None
+
+def _get_mp():
+    global mp, HAS_MP
+    if mp is None and HAS_MP is not False:
+        try:
+            import mediapipe as _mp
+            mp = _mp
+            HAS_MP = True
+        except Exception:
+            HAS_MP = False
+    return mp
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
@@ -188,18 +196,14 @@ class HandTracker:
         # Output telemetry snapshot
         self.telemetry = TrackingTelemetry()
 
-        # Start camera & detector
-        self.cap = open_camera()
-        if self.cap is None:
-            self.status = "CAMERA UNAVAILABLE"
-            print("[HandTracking] Warning: Camera not detected. Mouse interaction active.")
-        else:
-            self.status = "LOADING MODEL..."
-            self.worker = threading.Thread(target=self._worker_loop, name="VisionHandTracker", daemon=True)
-            self.worker.start()
+        # Start non-blocking background sensor thread (Priority 3)
+        self.status = "INITIALIZING SENSORS..."
+        self.worker = threading.Thread(target=self._worker_loop, name="VisionHandTracker", daemon=True)
+        self.worker.start()
 
     def _init_mediapipe(self) -> bool:
-        if not HAS_MP:
+        mp_module = _get_mp()
+        if not mp_module or not HAS_MP:
             self.status = "MEDIAPIPE NOT INSTALLED"
             return False
         try:
@@ -226,6 +230,13 @@ class HandTracker:
 
     def _worker_loop(self):
         try:
+            self.cap = open_camera()
+            if self.cap is None:
+                self.status = "CAMERA UNAVAILABLE"
+                print("[HandTracking] Warning: Camera not detected. Mouse interaction active.")
+                return
+
+            self.status = "LOADING MODEL..."
             if not self._init_mediapipe():
                 return
 
@@ -243,7 +254,8 @@ class HandTracker:
 
                 try:
                     rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    mp_lib = _get_mp()
+                    mp_img = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=rgb)
                     results = self.detector.detect_for_video(mp_img, ts_ms)
                     self._process_detection(frame, results, t_now)
                 except Exception as e:

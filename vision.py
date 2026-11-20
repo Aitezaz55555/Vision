@@ -15,6 +15,14 @@ import webbrowser
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
 
+if sys.platform == "win32":
+    try:
+        import ctypes
+        # Suppress OS-level Bad Image and Critical Error modal dialogs so Python handles them cleanly
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    except Exception:
+        pass
+
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
 
 import cv2
