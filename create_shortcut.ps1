@@ -23,15 +23,14 @@ try {
         $scriptDir = (Get-Item -Path ".").FullName
     }
 
+    $vbsLauncher = Join-Path $scriptDir "run_vision_silent.vbs"
     $targetBatch = Join-Path $scriptDir "run_vision_portable.bat"
     if (-not (Test-Path $targetBatch)) {
-        # Fallback to run_vision.bat if portable launcher is missing
         $targetBatch = Join-Path $scriptDir "run_vision.bat"
-        if (-not (Test-Path $targetBatch)) {
-            Write-Host "[ERROR] Neither run_vision_portable.bat nor run_vision.bat was found in: $scriptDir" -ForegroundColor Red
-            exit 1
-        }
     }
+
+    $customIcon = Join-Path $scriptDir "assets\vision.ico"
+    $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
 
     # 2. Locate user's Desktop directory
     $desktopDir = $DestinationDir
@@ -70,13 +69,17 @@ try {
     $wshShell = New-Object -ComObject WScript.Shell
     $shortcut = $wshShell.CreateShortcut($shortcutPath)
 
-    # 4. Configure Shortcut properties
-    $shortcut.TargetPath = $targetBatch
+    # 4. Configure Shortcut properties (Silent clean launch without console flash)
+    if (Test-Path $vbsLauncher) {
+        $shortcut.TargetPath = $wscriptExe
+        $shortcut.Arguments = "`"$vbsLauncher`""
+    } else {
+        $shortcut.TargetPath = $targetBatch
+    }
     $shortcut.WorkingDirectory = $scriptDir
-    $shortcut.Description = "VISION 1.2 - AI Voice Assistant"
+    $shortcut.Description = "VISION AI - Advanced Desktop Voice Assistant"
 
     # Icon configuration: Use custom icon if present, otherwise shell32.dll holographic/display icon
-    $customIcon = Join-Path $scriptDir "assets\vision.ico"
     if (Test-Path $customIcon) {
         $shortcut.IconLocation = "$customIcon,0"
     } else {
@@ -89,10 +92,19 @@ try {
     $localShortcutPath = Join-Path $scriptDir "VISION AI.lnk"
     try {
         $localShortcut = $wshShell.CreateShortcut($localShortcutPath)
-        $localShortcut.TargetPath = $targetBatch
+        if (Test-Path $vbsLauncher) {
+            $localShortcut.TargetPath = $wscriptExe
+            $localShortcut.Arguments = "`"$vbsLauncher`""
+        } else {
+            $localShortcut.TargetPath = $targetBatch
+        }
         $localShortcut.WorkingDirectory = $scriptDir
-        $localShortcut.Description = "VISION 1.2 - AI Voice Assistant"
-        $localShortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,13"
+        $localShortcut.Description = "VISION AI - Advanced Desktop Voice Assistant"
+        if (Test-Path $customIcon) {
+            $localShortcut.IconLocation = "$customIcon,0"
+        } else {
+            $localShortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,13"
+        }
         $localShortcut.Save()
     } catch {}
 

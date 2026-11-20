@@ -196,6 +196,69 @@ def get_performance_info() -> str:
     return f"CPU usage is at {cpu:.0f}%, and RAM is at {mem.percent:.0f}% with {used_gb:.1f} of {total_gb:.1f} gigabytes used."
 
 
+def get_ram_info() -> str:
+    """Returns detailed RAM utilization metrics."""
+    mem = psutil.virtual_memory()
+    used_gb = mem.used / (1024 ** 3)
+    total_gb = mem.total / (1024 ** 3)
+    free_gb = mem.available / (1024 ** 3)
+    return f"RAM usage is currently at {mem.percent:.0f}%, with {used_gb:.1f} gigabytes used out of {total_gb:.1f} gigabytes, leaving {free_gb:.1f} gigabytes free."
+
+
+def get_running_apps(limit: int = 8) -> str:
+    """Returns a natural spoken summary of active user applications."""
+    apps = []
+    if sys.platform.startswith("win"):
+        try:
+            import win32gui
+            def enum_win(hwnd, _):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd).strip()
+                    if title and len(title) > 2:
+                        ignored = ("Program Manager", "Settings", "Windows Input Experience", "Setup", "Task Switching")
+                        if not any(title.startswith(x) for x in ignored):
+                            if not any(x in title.lower() for x in ["default ime", "msctfime", "olemainthread"]):
+                                parts = title.split(" - ")
+                                app_name = parts[-1].strip() if len(parts) > 1 else title
+                                if app_name and app_name not in apps:
+                                    apps.append(app_name)
+            win32gui.EnumWindows(enum_win, None)
+        except Exception:
+            pass
+
+    if not apps:
+        known_exes = {
+            "chrome.exe": "Google Chrome",
+            "code.exe": "VS Code",
+            "notepad.exe": "Notepad",
+            "explorer.exe": "File Explorer",
+            "whatsapp.exe": "WhatsApp",
+            "spotify.exe": "Spotify",
+            "discord.exe": "Discord",
+            "msedge.exe": "Microsoft Edge",
+            "firefox.exe": "Firefox",
+            "brave.exe": "Brave",
+            "slack.exe": "Slack",
+            "python.exe": "Python",
+            "cmd.exe": "Command Prompt",
+            "powershell.exe": "PowerShell"
+        }
+        seen = set()
+        for p in psutil.process_iter(['name']):
+            try:
+                name = (p.info['name'] or '').lower()
+                if name in known_exes and known_exes[name] not in seen:
+                    seen.add(known_exes[name])
+                    apps.append(known_exes[name])
+            except Exception:
+                pass
+
+    if apps:
+        top_apps = apps[:limit]
+        return f"Currently running applications include: {', '.join(top_apps)}."
+    return "I could not detect any active user applications running right now."
+
+
 def get_system_summary() -> str:
     """Returns basic system environment information."""
     os_ver = f"{platform.system()} {platform.release()} (Build {platform.version().split('.')[ -1] if '.' in platform.version() else platform.version()})"

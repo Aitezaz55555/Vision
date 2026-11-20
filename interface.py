@@ -377,16 +377,21 @@ def draw_status_panel(layer, glow, t):
 
     state_labels = {
         "idle": "STANDBY // READY",
-        "monitoring": "MONITORING // CLAP TO ACTIVATE",
+        "monitoring": "STANDBY // CLAP TO ACTIVATE",
+        "sleep": "SLEEP MODE // CLAP TO WAKE",
         "clap_detected": "CLAP DETECTED // ACTIVATING",
         "activating": "VISION ONLINE // SYSTEMS OPTIMAL",
-        "listening": "LISTENING FOR COMMAND...",
-        "processing": "PROCESSING QUERY...",
-        "generating": "GENERATING AI RESPONSE...",
-        "executing": "EXECUTING COMMAND...",
+        "listening": "LISTENING // CONVERSATION ACTIVE",
+        "dictation": "DICTATION MODE // RECORDING SPEECH",
+        "processing": "PROCESSING SPEECH...",
+        "understanding": "UNDERSTANDING INTENT...",
+        "thinking": "THINKING...",
+        "searching": "SEARCHING SOURCES...",
+        "generating": "THINKING // GENERATING AI RESPONSE...",
+        "executing": "EXECUTING TASK...",
         "speaking": "VISION SPEAKING...",
         "interrupted": "SPEECH INTERRUPTED // READY",
-        "error": "SYSTEM ERROR",
+        "error": "SYSTEM NOTICE",
     }
     status_text = state_labels.get(st, f"STATUS: {st.upper()}")
     gesture_st = S.get("gesture_label", "")
@@ -781,11 +786,38 @@ def sync_render_size():
         F = 1.5 * H
 
 
+def apply_window_icon(window_name=WIN):
+    """Applies the custom assets/vision.ico icon to the OpenCV window and Windows taskbar."""
+    if not sys.platform.startswith("win"):
+        return
+    icon_path = os.path.join(SCRIPT_DIR, "assets", "vision.ico")
+    if not os.path.isfile(icon_path):
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, window_name)
+        if not hwnd:
+            return
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x00000010
+        hicon_big = user32.LoadImageW(0, os.path.abspath(icon_path), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        hicon_small = user32.LoadImageW(0, os.path.abspath(icon_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        WM_SETICON = 0x0080
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, 1, hicon_big)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, 0, hicon_small)
+    except Exception:
+        pass
+
+
 def main():
     tracker = HandTracker()
     particle_system = ParticleSystem(count=240)
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WIN, W, H)
+    apply_window_icon(WIN)
     cv2.setMouseCallback(WIN, on_mouse)
     full = False                       # press F to toggle fullscreen
     t0 = last = time.time()

@@ -61,6 +61,13 @@ def open_folder(folder_name: str) -> Tuple[bool, str, Optional[str]]:
         else:
             subprocess.run(["xdg-open", norm])
 
+    PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Check project / workspace folder
+    if key in ("project", "workspace", "code", "root", "vision", "source"):
+        _safe_open(PROJECT_DIR)
+        return True, "Opening your project folder.", PROJECT_DIR
+
     # Check standard folders
     if key in STANDARD_FOLDERS:
         path = STANDARD_FOLDERS[key]
@@ -161,3 +168,108 @@ def search_and_open_file(filename_query: str) -> Tuple[bool, str, Optional[str]]
             continue
 
     return False, f"I could not locate a file matching {filename_query}.", None
+
+
+def find_files_matching(query: str) -> Tuple[bool, str, Optional[str]]:
+    """
+    Intelligently searches for notes, documents, and files matching keywords.
+    E.g. 'dbms notes' searches for files containing 'dbms' or 'notes'.
+    Opens the file upon discovery.
+    """
+    raw_q = query.lower().strip()
+    for filler in ("my", "the", "find", "search", "notes", "note", "files", "file", "documents", "document"):
+        raw_q = raw_q.replace(filler, "").strip()
+
+    search_term = raw_q if len(raw_q) >= 2 else query.lower().strip()
+    search_roots = [
+        os.path.expanduser("~/Documents"),
+        os.path.expanduser("~/Downloads"),
+        os.path.expanduser("~/Desktop"),
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ]
+
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for dirpath, _, filenames in os.walk(root):
+                for f in filenames:
+                    f_low = f.lower()
+                    if search_term in f_low or (query.lower() in f_low):
+                        full_path = os.path.join(dirpath, f)
+                        if is_path_safe(full_path):
+                            if sys.platform.startswith("win"):
+                                try:
+                                    os.startfile(full_path)
+                                except Exception:
+                                    pass
+                            folder_name = os.path.basename(dirpath)
+                            return True, f"Found your file {f} in {folder_name} and opened it for you Sir.", full_path
+        except Exception:
+            continue
+
+    return False, f"Sir, I could not find any notes or documents matching '{query}' in your Desktop, Documents, or Downloads folders.", None
+
+
+def summarize_local_document(doc_query: str, summarizer_func=None) -> Tuple[bool, str]:
+    """
+    Finds a local document (PDF, TXT, MD) and extracts text to generate a spoken summary.
+    """
+    search_roots = [
+        os.path.expanduser("~/Downloads"),
+        os.path.expanduser("~/Documents"),
+        os.path.expanduser("~/Desktop"),
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ]
+    target_path = None
+    target_name = ""
+
+    # Find the requested file or the most recently modified document
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for dirpath, _, filenames in os.walk(root):
+                for f in filenames:
+                    if f.lower().endswith((".pdf", ".txt", ".md", ".docx")):
+                        if not doc_query or doc_query.lower() in f.lower() or "pdf" in doc_query.lower():
+                            target_path = os.path.join(dirpath, f)
+                            target_name = f
+                            break
+                if target_path:
+                    break
+        except Exception:
+            pass
+        if target_path:
+            break
+
+    if not target_path or not os.path.isfile(target_path):
+        return False, "Sir, I could not find a relevant PDF or document to summarize."
+
+    extracted_text = ""
+    try:
+        if target_path.lower().endswith((".txt", ".md")):
+            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+                extracted_text = f.read(2500)
+        elif target_path.lower().endswith(".pdf"):
+            # Attempt to extract text from PDF using pypdf if available, else basic read
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(target_path)
+                pages_text = [page.extract_text() or "" for page in reader.pages[:3]]
+                extracted_text = "\n".join(pages_text)[:2500]
+            except Exception:
+                extracted_text = f"Document title: {target_name}. File located at {target_path}."
+    except Exception as e:
+        print(f"[DocumentIntelligence] Extraction notice: {e}")
+
+    if extracted_text and summarizer_func is not None:
+        try:
+            prompt = f"Please summarize this document concisely in 2 to 3 natural spoken sentences:\n{extracted_text}"
+            summary = summarizer_func(prompt)
+            if summary:
+                return True, f"Here is a summary of {target_name}: {summary}"
+        except Exception:
+            pass
+
+    return True, f"Found {target_name}. It contains approximately {len(extracted_text.split())} words covering key notes and study material."

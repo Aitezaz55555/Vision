@@ -27,9 +27,9 @@ from modules import (
     launch_application, close_application, normalize_app_name, find_application_path, control_window,
     control_volume, get_volume_level, adjust_brightness,
     lock_workstation, execute_shutdown, get_battery_info,
-    get_performance_info, get_system_summary, capture_screenshot,
+    get_performance_info, get_ram_info, get_running_apps, get_system_summary, capture_screenshot,
     open_website, search_web, sanitize_url,
-    open_folder, list_files_in_folder, search_and_open_file,
+    open_folder, list_files_in_folder, search_and_open_file, find_files_matching, summarize_local_document,
     match_deterministic_intent, parse_intent_with_ollama,
     ClapDetector, acquire_instance_lock, release_instance_lock,
     enable_startup, disable_startup, is_startup_enabled, get_startup_status,
@@ -297,23 +297,34 @@ def note_audio_failure(reason):
         reset_audio_pipeline(reason)
 
 
-def safe_listen(timeout=6, phrase_time=10, mode="command"):
-    """Open the microphone for one bounded listen cycle with multi-accent recognition fallback."""
+def safe_listen(timeout=6, phrase_time=10, mode="command", active_source=None):
+    """
+    Listens for speech with high sensitivity, persistent streaming, and multi-accent fallback
+    supporting Indian English, US English, and British English pronunciations.
+    """
     try:
-        with audio_lock:
-            with get_microphone() as source:
-                print(f"Listening ({mode})...")
-                audio = recognizer.listen(source, timeout=max(1, int(timeout)),
-                                          phrase_time_limit=max(1, int(phrase_time)))
-        # Dual-pass recognition: primary en-IN, fallback en-US
+        if active_source is not None:
+            audio = recognizer.listen(active_source, timeout=max(1, int(timeout)),
+                                      phrase_time_limit=max(1, int(phrase_time)))
+        else:
+            with audio_lock:
+                with get_microphone() as source:
+                    audio = recognizer.listen(source, timeout=max(1, int(timeout)),
+                                              phrase_time_limit=max(1, int(phrase_time)))
+
+        set_vision_state("processing")
         text = ""
-        try:
-            text = recognizer.recognize_google(audio, language="en-IN").strip()
-        except sr.UnknownValueError:
+        # Multi-accent cascading recognition (en-IN -> en-US -> en-GB)
+        for lang in ("en-IN", "en-US", "en-GB"):
             try:
-                text = recognizer.recognize_google(audio, language="en-US").strip()
+                text = recognizer.recognize_google(audio, language=lang).strip()
+                if text:
+                    break
             except sr.UnknownValueError:
-                text = ""
+                continue
+            except sr.RequestError as e:
+                print(f"[SpeechRecognition] Service notice ({lang}): {e}")
+                break
 
         if text:
             global audio_failure_count
@@ -922,6 +933,8 @@ def introduce_yourself():
 
 
 # ==================== ACTIVE MODE ==================== #
+dictation_active = False
+
 def enter_active_mode():
     global conversation_mode
     conversation_mode = True
@@ -929,33 +942,59 @@ def enter_active_mode():
 
 
 def exit_active_mode():
-    global conversation_mode
+    global conversation_mode, dictation_active
     conversation_mode = False
+    dictation_active = False
     set_vision_state("monitoring")
     print("\n[Standby] Vision is in background standby. Clap twice to activate!")
 
 
 def run_active_listening_loop():
+    global dictation_active
     print("[Active mode] Continuous listening ON...")
     silence_count = 0
-    max_silence = 4  # after 4 consecutive empty listens (~16s), return to standby
+    max_silence = 5  # after 5 consecutive empty listens (~25s), return to standby
 
-    while conversation_mode:
-        set_vision_state("listening")
-        command = listen_for_command()
-        if command:
-            silence_count = 0
-            set_vision_state("processing", text=command)
-            process_command(command)
-            if not conversation_mode:
-                break
-        else:
-            silence_count += 1
-            if silence_count >= max_silence:
-                print("[Active mode] Inactivity timeout. Returning to background standby.")
-                exit_active_mode()
-                break
-            time.sleep(0.05)
+    try:
+        with audio_lock:
+            with get_microphone() as persistent_source:
+                recognizer.adjust_for_ambient_noise(persistent_source, duration=0.6)
+                while conversation_mode:
+                    if dictation_active:
+                        set_vision_state("dictation")
+                        phrase = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="dictation", active_source=persistent_source)
+                        if phrase:
+                            silence_count = 0
+                            if re.search(r"\b(?:stop dictation|exit dictation|end dictation)\b", phrase, re.I):
+                                dictation_active = False
+                                speak("Dictation stopped Sir.")
+                                set_vision_state("listening")
+                            else:
+                                print(f"[Dictation] {phrase}")
+                                set_vision_state("dictation", text=phrase)
+                                dictation_path = os.path.join(DATA_DIR, "dictation.txt")
+                                os.makedirs(DATA_DIR, exist_ok=True)
+                                with open(dictation_path, "a", encoding="utf-8") as f:
+                                    f.write(phrase + "\n")
+                    else:
+                        set_vision_state("listening")
+                        command = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="command", active_source=persistent_source)
+                        if command:
+                            silence_count = 0
+                            set_vision_state("processing", text=command)
+                            process_command(command)
+                            if not conversation_mode:
+                                break
+                        else:
+                            silence_count += 1
+                            if silence_count >= max_silence:
+                                print("[Active mode] Inactivity timeout. Returning to background standby.")
+                                exit_active_mode()
+                                break
+                            time.sleep(0.04)
+    except Exception as e:
+        print(f"[Active mode] Stream exception: {e}")
+        exit_active_mode()
 
 
 # ==================== COMMAND UNDERSTANDING ==================== #
@@ -1205,6 +1244,22 @@ def execute_intent(intent, args, original_command):
         context.update_action("list_files", {"folder": folder_target}, reply)
         speak(reply)
 
+    elif intent == "find_files":
+        q = str(args.get("query", "")).strip()
+        if not q:
+            q = ask_followup("Which file or notes should I look for?")
+        if q:
+            ok, reply, path = find_files_matching(q)
+            speak(reply)
+        else:
+            reply = "I did not get the file name Sir."
+            speak(reply)
+
+    elif intent == "summarize_document":
+        target = str(args.get("target", "pdf")).strip()
+        ok, reply = summarize_local_document(target, summarizer_func=ask_local_ai)
+        speak(reply)
+
     elif intent == "create_folder":
         name = str(args.get("name", "")).strip() or ask_followup("What should I name the folder?", 10, 12)
         if name:
@@ -1257,6 +1312,14 @@ def execute_intent(intent, args, original_command):
 
     elif intent == "performance":
         reply = get_performance_info()
+        speak(reply)
+
+    elif intent == "system_ram":
+        reply = get_ram_info()
+        speak(reply)
+
+    elif intent == "list_running_apps":
+        reply = get_running_apps()
         speak(reply)
 
     elif intent == "system_info":
@@ -1353,6 +1416,20 @@ def execute_intent(intent, args, original_command):
             reply = "Okay Sir, I saved that in memory"
         else:
             reply = "Please say something to remember"
+        speak(reply)
+
+    elif intent == "add_project_note":
+        note = str(args.get("note", "")).strip()
+        if note:
+            memory = load_memory()
+            if "project_notes" not in memory:
+                memory["project_notes"] = []
+            memory["project_notes"].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "note": note})
+            memory["notes"].append(f"[Project] {note}")
+            save_memory(memory)
+            reply = f"Understood Sir. Saved to your project memory: {note}"
+        else:
+            reply = "Please say something to remember for the project Sir."
         speak(reply)
 
     elif intent == "show_notes":
@@ -1459,6 +1536,23 @@ def execute_intent(intent, args, original_command):
             speak(f"I said: {last}")
         else:
             speak("I haven't said anything yet Sir.")
+
+    elif intent == "tts_continue":
+        reply = "Continuing our previous conversation Sir."
+        speak(reply)
+        stream_conversational_response("Please continue your previous explanation from where you stopped.")
+
+    elif intent == "dictation_start":
+        dictation_active = True
+        reply = "Dictation mode activated. Speak freely, and say stop dictation when finished."
+        speak(reply)
+        set_vision_state("dictation")
+
+    elif intent == "dictation_stop":
+        dictation_active = False
+        reply = "Dictation mode ended Sir."
+        speak(reply)
+        set_vision_state("listening")
 
     elif intent == "tts_slower":
         VOICE_RATE = max(100, VOICE_RATE - 20)

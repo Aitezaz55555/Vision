@@ -10,10 +10,10 @@ from modules.apps import launch_application, close_application, normalize_app_na
 from modules.system import (
     control_volume, get_volume_level, adjust_brightness,
     lock_workstation, execute_shutdown, get_battery_info,
-    get_performance_info, get_system_summary, capture_screenshot
+    get_performance_info, get_ram_info, get_running_apps, get_system_summary, capture_screenshot
 )
 from modules.browser import open_website, search_web, sanitize_url
-from modules.files import open_folder, list_files_in_folder, search_and_open_file
+from modules.files import open_folder, list_files_in_folder, search_and_open_file, find_files_matching, summarize_local_document
 from modules.router import match_deterministic_intent, parse_intent_with_ollama
 from modules.clap import ClapDetector
 from modules.instance_lock import acquire_instance_lock, release_instance_lock

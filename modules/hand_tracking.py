@@ -172,6 +172,7 @@ class HandTracker:
         self.lock = threading.Lock()
         self.cap = None
         self.detector = None
+        self.worker = None
         self.status = "INITIALIZING..."
 
         # Smoothing filters for up to 2 hands (21 landmarks * 3 coords = 63 dims)
@@ -194,7 +195,8 @@ class HandTracker:
             print("[HandTracking] Warning: Camera not detected. Mouse interaction active.")
         else:
             self.status = "LOADING MODEL..."
-            threading.Thread(target=self._worker_loop, daemon=True).start()
+            self.worker = threading.Thread(target=self._worker_loop, name="VisionHandTracker", daemon=True)
+            self.worker.start()
 
     def _init_mediapipe(self) -> bool:
         if not HAS_MP:
@@ -223,28 +225,40 @@ class HandTracker:
             return False
 
     def _worker_loop(self):
-        if not self._init_mediapipe():
-            return
+        try:
+            if not self._init_mediapipe():
+                return
 
-        while self.running and self.cap is not None:
-            ok, frame = self.cap.read()
-            if not ok or frame is None:
-                time.sleep(0.015)
-                continue
+            while self.running and self.cap is not None:
+                ok, frame = self.cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.015)
+                    continue
 
-            # Mirror frame horizontally for natural intuitive interaction
-            frame = cv2.flip(frame, 1)
-            t_now = time.time()
-            ts_ms = max(self._last_timestamp_ms + 1, int((t_now - self._start_time) * 1000))
-            self._last_timestamp_ms = ts_ms
+                # Mirror frame horizontally for natural intuitive interaction
+                frame = cv2.flip(frame, 1)
+                t_now = time.time()
+                ts_ms = max(self._last_timestamp_ms + 1, int((t_now - self._start_time) * 1000))
+                self._last_timestamp_ms = ts_ms
 
-            try:
-                rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                results = self.detector.detect_for_video(mp_img, ts_ms)
-                self._process_detection(frame, results, t_now)
-            except Exception as e:
-                time.sleep(0.01)
+                try:
+                    rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    results = self.detector.detect_for_video(mp_img, ts_ms)
+                    self._process_detection(frame, results, t_now)
+                except Exception as e:
+                    print(f"[HandTracking] Frame processing error: {e}")
+                    time.sleep(0.01)
+        except Exception as e:
+            self.status = "TRACKING ERROR"
+            print(f"[HandTracking] Worker error: {e}")
+        finally:
+            if self.detector is not None:
+                try:
+                    self.detector.close()
+                except Exception as e:
+                    print(f"[HandTracking] Detector cleanup error: {e}")
+                self.detector = None
 
     def _process_detection(self, frame: np.ndarray, results: Any, t_now: float):
         raw_hands = getattr(results, "hand_landmarks", []) or []
@@ -454,10 +468,13 @@ class HandTracker:
     def stop(self):
         """Cleanly releases camera and background resources."""
         self.running = False
-        time.sleep(0.08)
         if self.cap is not None:
             try:
                 self.cap.release()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[HandTracking] Camera cleanup error: {e}")
+        if self.worker is not None and self.worker is not threading.current_thread():
+            self.worker.join(timeout=2.0)
+            if self.worker.is_alive():
+                print("[HandTracking] Worker did not stop within 2 seconds")
         self.cap = None
