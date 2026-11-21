@@ -102,6 +102,16 @@ def prepare_chat_messages(user_prompt: str,
     user_name = memory.get("name", "") if isinstance(memory, dict) else ""
     notes = memory.get("notes", []) if isinstance(memory, dict) else []
 
+    # Pull permanent user memory from SQLite
+    try:
+        from modules.memory_db import get_memory, build_memory_context_prompt
+        db_name = get_memory("user_name", "personal")
+        if db_name:
+            user_name = db_name
+        mem_prompt = build_memory_context_prompt()
+    except Exception:
+        mem_prompt = ""
+
     system_prompt = build_system_prompt(
         assistant_name=assistant_name,
         creator_name=creator_name,
@@ -109,6 +119,9 @@ def prepare_chat_messages(user_prompt: str,
         user_name=user_name,
         notes=notes
     )
+
+    if mem_prompt:
+        system_prompt += "\n" + mem_prompt
 
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 

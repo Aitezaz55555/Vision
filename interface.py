@@ -739,7 +739,201 @@ def press(name):
         )
 
 
+DATA_USER_QUERY = os.path.join(SCRIPT_DIR, "data", "user_query.json")
+
+_INPUT_STATE = {
+    "active": False,
+    "text": "",
+    "cursor_visible": True,
+    "last_blink": 0.0,
+    "send_hover": False,
+    "clear_hover": False,
+    "bar_rect": None,       # (x, y, w, h)
+    "send_rect": None,      # (x, y, w, h)
+    "clear_rect": None,     # (x, y, w, h)
+    "chat_history": [],     # list of (role, text, time)
+    "last_recorded_reply": ""
+}
+
+
+def submit_text_input(query_text: str):
+    """Publish a typed text command to data/user_query.json for the unified pipeline."""
+    q = query_text.strip()
+    if not q:
+        return
+    payload = {
+        "query_id": f"{time.time()}_{os.getpid()}",
+        "text": q,
+        "input_method": "text",
+        "timestamp": time.time()
+    }
+    try:
+        os.makedirs(os.path.join(SCRIPT_DIR, "data"), exist_ok=True)
+        with open(DATA_USER_QUERY, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print("[Interface] Query dispatch error:", e)
+
+    _INPUT_STATE["chat_history"].append(("YOU", q, time.time()))
+    if len(_INPUT_STATE["chat_history"]) > 6:
+        _INPUT_STATE["chat_history"].pop(0)
+    _INPUT_STATE["text"] = ""
+
+
+def draw_chat_history_overlay(img, W, H, K):
+    """Render floating holographic dialogue history above the input bar."""
+    history = _INPUT_STATE["chat_history"]
+    if not history:
+        return
+
+    hist_w = int(min(W * 0.74, 880 * K))
+    x0 = (W - hist_w) // 2
+    bar_y = H - int(55 * K)
+    
+    # Calculate box height based on items
+    items_to_show = history[-3:]
+    box_h = len(items_to_show) * int(22 * K) + int(14 * K)
+    y0 = max(int(60 * K), bar_y - box_h - int(8 * K))
+
+    # Translucent glass backing
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + hist_w, y0 + box_h), (10, 16, 28), -1)
+    cv2.rectangle(overlay, (x0, y0), (x0 + hist_w, y0 + box_h), col(C_MID, 0.45), 1)
+    cv2.addWeighted(overlay, 0.70, img, 0.30, 0, img)
+
+    # Render entries
+    curr_y = y0 + int(18 * K)
+    for role, text, _ in items_to_show:
+        role_col = C_BRIGHT if role == "YOU" else C_WHITE
+        prefix = f"[{role}]: "
+        fs = 0.46 * K
+        # Draw prefix
+        cv2.putText(img, prefix, (x0 + int(10 * K), curr_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, col(role_col, 0.95), 1, cv2.LINE_AA)
+        pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+        # Draw message content (truncated to fit box)
+        max_chars = int(hist_w / (8.5 * K))
+        disp_text = text if len(text) <= max_chars else text[:max_chars - 3] + "..."
+        text_col = col(C_TEXT if role == "YOU" else C_WHITE, 0.90)
+        cv2.putText(img, disp_text, (x0 + int(10 * K) + pw, curr_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, text_col, 1, cv2.LINE_AA)
+        curr_y += int(22 * K)
+
+
+def draw_holographic_input_bar(img, W, H, K, now):
+    """Render futuristic glowing input bar at the bottom with SEND and CLR buttons."""
+    bar_w = int(min(W * 0.74, 880 * K))
+    bar_h = int(38 * K)
+    x0 = (W - bar_w) // 2
+    y0 = H - int(50 * K)
+
+    _INPUT_STATE["bar_rect"] = (x0, y0, bar_w, bar_h)
+
+    # Button dimensions
+    btn_w = int(58 * K)
+    btn_h = bar_h - int(8 * K)
+    btn_y = y0 + int(4 * K)
+    send_x = x0 + bar_w - btn_w - int(6 * K)
+    clr_x = send_x - btn_w - int(6 * K)
+    _INPUT_STATE["send_rect"] = (send_x, btn_y, btn_w, btn_h)
+    _INPUT_STATE["clear_rect"] = (clr_x, btn_y, btn_w, btn_h)
+
+    # Glass background
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), (8, 14, 24), -1)
+    # Glowing border
+    border_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["active"] else col(C_MID, 0.6)
+    border_th = 2 if _INPUT_STATE["active"] else 1
+    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), border_col, border_th)
+    cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+
+    # Corner brackets for futuristic aesthetic
+    c_len = int(8 * K)
+    cv2.line(img, (x0, y0), (x0 + c_len, y0), border_col, 2)
+    cv2.line(img, (x0, y0), (x0, y0 + c_len), border_col, 2)
+    cv2.line(img, (x0 + bar_w, y0), (x0 + bar_w - c_len, y0), border_col, 2)
+    cv2.line(img, (x0 + bar_w, y0), (x0 + bar_w, y0 + c_len), border_col, 2)
+    cv2.line(img, (x0, y0 + bar_h), (x0 + c_len, y0 + bar_h), border_col, 2)
+    cv2.line(img, (x0, y0 + bar_h), (x0, y0 + bar_h - c_len), border_col, 2)
+    cv2.line(img, (x0 + bar_w, y0 + bar_h), (x0 + bar_w - c_len, y0 + bar_h), border_col, 2)
+    cv2.line(img, (x0 + bar_w, y0 + bar_h), (x0 + bar_w, y0 + bar_h - c_len), border_col, 2)
+
+    # Prompt icon / prefix
+    prefix = ">_ "
+    fs = 0.50 * K
+    cv2.putText(img, prefix, (x0 + int(12 * K), y0 + int(24 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_BRIGHT, 0.95), 1, cv2.LINE_AA)
+    pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+    text_x = x0 + int(12 * K) + pw
+
+    # Text or Placeholder
+    if _INPUT_STATE["text"]:
+        disp = _INPUT_STATE["text"]
+        # Limit visible text width so it doesn't overlap buttons
+        max_px = clr_x - text_x - int(10 * K)
+        tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+        while tw > max_px and len(disp) > 1:
+            disp = disp[1:]
+            tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+
+        cv2.putText(img, disp, (text_x, y0 + int(24 * K)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_WHITE, 1.0), 1, cv2.LINE_AA)
+        
+        # Cursor
+        if _INPUT_STATE["active"]:
+            if now - _INPUT_STATE["last_blink"] > 0.45:
+                _INPUT_STATE["cursor_visible"] = not _INPUT_STATE["cursor_visible"]
+                _INPUT_STATE["last_blink"] = now
+            if _INPUT_STATE["cursor_visible"]:
+                cur_x = text_x + tw + 2
+                cv2.line(img, (cur_x, y0 + int(8 * K)), (cur_x, y0 + bar_h - int(8 * K)),
+                         col(C_BRIGHT, 1.0), 2)
+    else:
+        placeholder = "Type message or command... (Click or press '/' to type, Enter to send)"
+        if _INPUT_STATE["active"]:
+            placeholder = "Type instruction... (Press Enter to execute)"
+        cv2.putText(img, placeholder, (text_x, y0 + int(24 * K)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs * 0.90, col(C_MID, 0.65), 1, cv2.LINE_AA)
+        if _INPUT_STATE["active"]:
+            cv2.line(img, (text_x, y0 + int(8 * K)), (text_x, y0 + bar_h - int(8 * K)),
+                     col(C_BRIGHT, 1.0), 2)
+
+    # [CLR] button
+    clr_col = col(C_BRIGHT, 0.85) if _INPUT_STATE["clear_hover"] else col(C_MID, 0.5)
+    cv2.rectangle(img, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), clr_col, 1)
+    cv2.putText(img, "CLR", (clr_x + int(12 * K), btn_y + int(20 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40 * K, clr_col, 1, cv2.LINE_AA)
+
+    # [SEND] button
+    send_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["send_hover"] else col(C_MID, 0.75)
+    cv2.rectangle(img, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), send_col, 1)
+    cv2.putText(img, "SEND", (send_x + int(9 * K), btn_y + int(20 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40 * K, send_col, 1, cv2.LINE_AA)
+
+
 def on_mouse(ev, x, y, flags, _):
+    # Check input bar and button interactions
+    if _INPUT_STATE["send_rect"] and _INPUT_STATE["clear_rect"] and _INPUT_STATE["bar_rect"]:
+        sx, sy, sw, sh = _INPUT_STATE["send_rect"]
+        cx, cy, cw, ch = _INPUT_STATE["clear_rect"]
+        bx, by, bw, bh = _INPUT_STATE["bar_rect"]
+
+        _INPUT_STATE["send_hover"] = (sx <= x <= sx + sw and sy <= y <= sy + sh)
+        _INPUT_STATE["clear_hover"] = (cx <= x <= cx + cw and cy <= y <= cy + ch)
+
+        if ev == cv2.EVENT_LBUTTONDOWN:
+            if _INPUT_STATE["send_hover"]:
+                submit_text_input(_INPUT_STATE["text"])
+                return
+            elif _INPUT_STATE["clear_hover"]:
+                _INPUT_STATE["text"] = ""
+                return
+            elif bx <= x <= bx + bw and by <= y <= by + bh:
+                _INPUT_STATE["active"] = True
+                return
+            else:
+                _INPUT_STATE["active"] = False
+
     if ev == cv2.EVENT_LBUTTONDOWN:
         S["drag"], S["lx"], S["ly"] = True, x, y
     elif ev == cv2.EVENT_MOUSEMOVE and S["drag"]:
@@ -925,28 +1119,54 @@ def main():
         if S.get("show_camera", True) and telemetry.preview_frame is not None:
             draw_camera_pip(img, telemetry.preview_frame, K)
 
+        # Synchronize conversation dialogue into chat history overlay
+        st_info = get_vision_state_info()
+        cur_reply = st_info.get("result", "").strip()
+        if cur_reply and cur_reply != _INPUT_STATE["last_recorded_reply"]:
+            _INPUT_STATE["last_recorded_reply"] = cur_reply
+            _INPUT_STATE["chat_history"].append(("VISION", cur_reply, now))
+            if len(_INPUT_STATE["chat_history"]) > 6:
+                _INPUT_STATE["chat_history"].pop(0)
+
+        # Render chat history and holographic input bar
+        draw_chat_history_overlay(img, W, H, K)
+        draw_holographic_input_bar(img, W, H, K, now)
+
         cv2.imshow(WIN, img)
 
         k = cv2.waitKey(1) & 0xFF
         sync_render_size()
-        if k in (27, ord("q")):
-            break
-        elif k in (ord("c"), ord("C")):
-            S["show_camera"] = not S.get("show_camera", True)
-        elif k in (ord("+"), ord("=")):
-            press("+")
-        elif k in (ord("-"), ord("_")):
-            press("-")
-        elif k == ord("]"):
-            GLOW[0] = min(3.0, GLOW[0] * 1.2)
-        elif k == ord("["):
-            GLOW[0] = max(0.2, GLOW[0] / 1.2)
-        elif k == ord("r"):
-            press("RESET")
-        elif k == ord("f"):
-            full = not full
-            cv2.setWindowProperty(WIN, cv2.WND_PROP_FULLSCREEN,
-                                  cv2.WINDOW_FULLSCREEN if full else cv2.WINDOW_NORMAL)
+
+        if _INPUT_STATE["active"]:
+            if k == 13:  # Enter -> Submit text query
+                submit_text_input(_INPUT_STATE["text"])
+            elif k == 8:   # Backspace -> Delete character
+                _INPUT_STATE["text"] = _INPUT_STATE["text"][:-1]
+            elif k == 27:  # Esc -> Deactivate input bar
+                _INPUT_STATE["active"] = False
+            elif 32 <= k <= 126:  # Printable ASCII characters
+                _INPUT_STATE["text"] += chr(k)
+        else:
+            if k == ord("/"):
+                _INPUT_STATE["active"] = True
+            elif k in (27, ord("q")):
+                break
+            elif k in (ord("c"), ord("C")):
+                S["show_camera"] = not S.get("show_camera", True)
+            elif k in (ord("+"), ord("=")):
+                press("+")
+            elif k in (ord("-"), ord("_")):
+                press("-")
+            elif k == ord("]"):
+                GLOW[0] = min(3.0, GLOW[0] * 1.2)
+            elif k == ord("["):
+                GLOW[0] = max(0.2, GLOW[0] / 1.2)
+            elif k == ord("r"):
+                press("RESET")
+            elif k == ord("f"):
+                full = not full
+                cv2.setWindowProperty(WIN, cv2.WND_PROP_FULLSCREEN,
+                                      cv2.WINDOW_FULLSCREEN if full else cv2.WINDOW_NORMAL)
 
         # Maintain smooth target framerate (45-60 FPS)
         time.sleep(max(0.0, 1.0 / 45.0 - (time.time() - frame_start)))

@@ -13,4 +13,8 @@ data/photos/*
 !data/photos/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+data/user_query.json
 scratch/

@@ -110,3 +110,48 @@ class ConversationContext:
                 return self.last_folder, "folder"
 
         return None, "unknown"
+
+    def get_last_topic(self) -> Optional[str]:
+        """Extract primary subject/topic from the most recent conversational turn."""
+        if not self.turns:
+            return None
+        last_turn = self.turns[-1]
+        u = last_turn.get("user", "")
+        import re
+        clean = re.sub(
+            r"^(?:can you |could you |please )?(?:explain|describe|tell me about|what is|what are|define|how does|why is|teach me about)\s+",
+            "", u, flags=re.I
+        ).strip(" ?.")
+        return clean if clean else u.strip(" ?.")
+
+    def augment_followup_query(self, query: str) -> str:
+        """
+        Connects short-term follow-up queries ('give me an example', 'make it simpler', 'now explain deletion')
+        with the active topic from the preceding turn to preserve conversational continuity.
+        """
+        import re
+        q = query.strip().rstrip(".?!")
+        topic = self.get_last_topic()
+        if not topic:
+            return query
+
+        # Pattern: "give me an example" / "show an example"
+        if re.search(r"^(?:give (?:me )?(?:an? )?example|show (?:me )?an? example|another example)\b", q, re.I):
+            return f"Give an illustrative, concrete example of {topic}."
+
+        # Pattern: "make it simpler" / "simplify that"
+        if re.search(r"^(?:make it (?:simpler|shorter|easier|brief)|simplify (?:it|that|this))\b", q, re.I):
+            return f"Make the previous explanation of {topic} simpler and more concise."
+
+        # Pattern: "now explain deletion" / "what about deletion"
+        m_sub = re.search(r"^(?:now explain|what about|how about|explain)\s+([a-zA-Z0-9_\-\s]+)$", q, re.I)
+        if m_sub:
+            sub = m_sub.group(1).strip()
+            if topic.lower() not in sub.lower():
+                return f"Explain {sub} in the context of {topic}."
+
+        # Pattern: "continue" / "tell me more"
+        if re.search(r"^(?:continue|tell me more|go on|elaborate further)\b", q, re.I):
+            return f"Continue elaborating further on {topic}."
+
+        return q

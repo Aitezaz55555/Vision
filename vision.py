@@ -25,8 +25,6 @@ if sys.platform == "win32":
 
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
 
-import cv2
-import ollama
 import pyaudio
 import speech_recognition as sr
 
@@ -44,7 +42,14 @@ from modules import (
     play_activation_chime, play_interrupt_cue,
     add_reminder, list_reminders, cancel_all_reminders, start_reminder_scheduler,
     StreamingTTSManager, split_stream_into_sentences, clean_text_for_speech,
-    detect_conversation_mode, build_system_prompt, prepare_chat_messages, stream_ollama_tokens
+    detect_conversation_mode, build_system_prompt, prepare_chat_messages, stream_ollama_tokens,
+    transcribe_audio, init_whisper_async, is_whisper_ready, configure_audio_recognizer,
+    save_memory as db_save_memory, get_memory as db_get_memory, search_memories as db_search_memories,
+    list_all_memories as db_list_all_memories, delete_memory as db_delete_memory,
+    append_conversation_turn as db_append_turn, build_memory_context_prompt as db_build_prompt,
+    list_open_windows, find_window_by_name, focus_window, send_shortcut, type_text_native,
+    prepare_whatsapp_message, execute_whatsapp_message, prepare_whatsapp_call, execute_whatsapp_call,
+    open_whatsapp_chat
 )
 
 # Global short-term conversation context
@@ -259,15 +264,7 @@ def get_microphone():
 
 
 def create_recognizer():
-    r = sr.Recognizer()
-    r.pause_threshold = float(CONFIG.get("pause_threshold", 0.85))
-    r.phrase_threshold = float(CONFIG.get("phrase_threshold", 0.25))
-    r.non_speaking_duration = float(CONFIG.get("non_speaking_duration", 0.5))
-    r.energy_threshold = int(CONFIG.get("energy_threshold", 55))
-    r.dynamic_energy_threshold = True
-    r.dynamic_energy_adjustment_damping = 0.15
-    r.dynamic_energy_ratio = 1.5
-    return r
+    return configure_audio_recognizer(sr.Recognizer(), CONFIG)
 
 
 recognizer = create_recognizer()
@@ -282,12 +279,13 @@ def calibrate_microphone_once(force=False):
         print("Calibrating microphone for ambient noise...")
         with audio_lock:
             with get_microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.9)
-        recognizer.energy_threshold = max(35, min(180, recognizer.energy_threshold * 1.25))
+                recognizer.adjust_for_ambient_noise(source, duration=0.8)
+        # Apply realistic headroom based on true room noise floor
+        recognizer.energy_threshold = max(80, int(recognizer.energy_threshold * 1.35))
         last_calibration_time = time.time()
         print(f"Microphone calibrated (energy threshold {int(recognizer.energy_threshold)})")
     except Exception as e:
-        print(f"Microphone calibration warning: {e}")
+        print(f"Microphone calibration notice: {e}")
 
 
 def reset_audio_pipeline(reason="audio recovery"):
@@ -307,8 +305,10 @@ def note_audio_failure(reason):
 
 def safe_listen(timeout=6, phrase_time=10, mode="command", active_source=None):
     """
-    Listens for speech with high sensitivity, persistent streaming, and multi-accent fallback
-    supporting Indian English, US English, and British English pronunciations.
+    Listens for speech with high sensitivity, persistent streaming, and multi-engine transcription:
+    1. Local offline faster-whisper (fast, robust against Indian English accents & variable speaking speeds).
+    2. Online Google Speech cascade (en-IN -> en-US -> en-GB).
+    3. Windows SAPI speech fallback.
     """
     try:
         if active_source is not None:
@@ -321,23 +321,12 @@ def safe_listen(timeout=6, phrase_time=10, mode="command", active_source=None):
                                               phrase_time_limit=max(1, int(phrase_time)))
 
         set_vision_state("processing")
-        text = ""
-        # Multi-accent cascading recognition (en-IN -> en-US -> en-GB)
-        for lang in ("en-IN", "en-US", "en-GB"):
-            try:
-                text = recognizer.recognize_google(audio, language=lang).strip()
-                if text:
-                    break
-            except sr.UnknownValueError:
-                continue
-            except sr.RequestError as e:
-                print(f"[SpeechRecognition] Service notice ({lang}): {e}")
-                break
+        text, engine = transcribe_audio(recognizer, audio, prefer_local=True)
 
         if text:
             global audio_failure_count
             audio_failure_count = 0
-            print(f"Heard ({mode}): {text}")
+            print(f"Heard ({mode} via {engine}): {text}")
             return text
         else:
             note_audio_failure("speech was not understood")
@@ -658,6 +647,7 @@ def stream_conversational_response(prompt: str) -> Tuple[bool, str]:
     print(f"[Ollama Chat] Streaming response in mode='{mode}' model='{active_model}'...")
     set_vision_state("generating", text=prompt)
 
+    import ollama
     token_gen = stream_ollama_tokens(
         ollama_client=ollama,
         model_name=active_model,
@@ -796,6 +786,7 @@ def take_screenshot():
 
 def take_photo():
     try:
+        import cv2
         camera = cv2.VideoCapture(0)
         if not camera.isOpened():
             speak("Camera not found")
@@ -1398,21 +1389,78 @@ def execute_intent(intent, args, original_command):
             speak(reply)
             open_interface()
 
-    # Personal Memory & Notes
+    # WhatsApp Integration
+    elif intent == "whatsapp_call":
+        contact = args.get("contact", "")
+        payload = prepare_whatsapp_call(contact)
+        context.set_confirmation("whatsapp_call", payload, payload["prompt"])
+        reply = payload["prompt"]
+        speak(reply)
+
+    elif intent == "whatsapp_message":
+        contact = args.get("contact", "")
+        msg = args.get("message", "")
+        payload = prepare_whatsapp_message(contact, msg)
+        context.set_confirmation("whatsapp_send_message", payload, payload["prompt"])
+        reply = payload["prompt"]
+        speak(reply)
+
+    elif intent == "whatsapp_open_chat":
+        contact = args.get("contact", "")
+        ok, reply = open_whatsapp_chat(contact)
+        speak(reply)
+
+    # Personal Memory & Notes (Permanent SQLite + Legacy JSON backup)
     elif intent == "set_name":
         name = str(args.get("name", "")).strip().title()
         if name:
+            db_save_memory("personal", "user_name", name)
             memory = load_memory()
             memory["name"] = name
             save_memory(memory)
-            reply = f"Okay Sir, I will remember that your name is {name}"
+            reply = f"Nice to meet you, {name}. I will remember that, Sir."
         else:
-            reply = "Please tell me your name properly"
+            reply = "Please tell me your name properly, Sir."
         speak(reply)
 
     elif intent == "get_name":
-        name = load_memory().get("name", "").strip()
-        reply = f"Your name is {name}" if name else "I do not know your name yet"
+        name = db_get_memory("user_name", "personal") or load_memory().get("name", "").strip()
+        reply = f"Your name is {name}, Sir." if name else "You have not told me your name yet, Sir."
+        speak(reply)
+
+    elif intent == "save_preference":
+        pref = str(args.get("preference", "")).strip()
+        if pref:
+            db_save_memory("preference", "user_preference", pref)
+            reply = f"Understood Sir. I will remember that you prefer {pref}."
+        else:
+            reply = "Please state your preference clearly Sir."
+        speak(reply)
+
+    elif intent == "list_memories":
+        all_mems = db_list_all_memories()
+        if all_mems:
+            items = [f"{m['category'].capitalize()} ({m['key']}): {m['value']}" for m in all_mems]
+            reply = "Here is what I have recorded in permanent memory Sir: " + "; ".join(items)
+        else:
+            reply = "I currently have no stored personal memories recorded, Sir."
+        speak(reply)
+
+    elif intent == "forget_memory":
+        query = str(args.get("query", "")).strip().lower()
+        deleted = False
+        if "name" in query:
+            deleted = db_delete_memory("user_name", "personal")
+        elif "preference" in query:
+            deleted = db_delete_memory("user_preference", "preference")
+        else:
+            mems = db_search_memories(query)
+            if mems:
+                deleted = db_delete_memory(mems[0]["key"], mems[0]["category"])
+        if deleted:
+            reply = "I have removed that from my memory, Sir."
+        else:
+            reply = "I could not find a matching record to remove, Sir."
         speak(reply)
 
     elif intent == "add_note":
@@ -1605,12 +1653,45 @@ def execute_intent(intent, args, original_command):
     return reply
 
 
-def process_command(command):
+def process_command(command, input_method="voice"):
     original = command.strip()
     if not original:
         return
     try:
+        # 1. Resolve pending confirmations for sensitive actions (WhatsApp, shutdown, etc.)
+        if context.has_pending_confirmation():
+            ans = original.lower().strip(" .!?,")
+            if ans in ("yes", "confirm", "proceed", "sure", "do it", "yeah", "yep", "haan", "theek hai"):
+                conf = context.pending_confirmation
+                act = conf.get("type")
+                args = conf.get("args", {})
+                context.clear_confirmation()
+                if act == "whatsapp_call":
+                    ok, reply = execute_whatsapp_call(args.get("contact", ""), args.get("phone"))
+                    speak(reply)
+                elif act == "whatsapp_send_message":
+                    ok, reply = execute_whatsapp_message(args.get("contact", ""), args.get("message", ""), args.get("phone"))
+                    speak(reply)
+                elif act == "shutdown":
+                    speak("Shutting down workstation now, Sir.")
+                    execute_shutdown()
+                elif act == "restart":
+                    speak("Restarting workstation now, Sir.")
+                    subprocess.run(["shutdown", "/r", "/t", "3"], check=False)
+                return
+            elif ans in ("no", "cancel", "stop", "abort", "nah", "mat karo"):
+                context.clear_confirmation()
+                speak("Operation cancelled, Sir.")
+                return
+
+        # 2. Conversational Continuity: augment short follow-up phrases with active dialogue topic
+        augmented = context.augment_followup_query(original)
+        if augmented != original:
+            print(f"[Context Continuity] Augmented '{original}' -> '{augmented}'")
+            original = augmented
+
         set_vision_state("processing", text=original)
+        db_append_turn("user", original, input_method=input_method)
 
         # Fast Deterministic & Contextual Pattern Matching
         intent, args = match_deterministic_intent(original, context)
@@ -1623,12 +1704,15 @@ def process_command(command):
 
         if intent == "chat":
             was_interrupted, reply = stream_conversational_response(original)
+            if reply:
+                db_append_turn("assistant", reply, input_method=input_method, intent="chat")
         else:
             reply = execute_intent(intent, args, original)
             if reply and not tts_manager.cancel_event.is_set():
                 set_vision_state("executing", text=original, result=str(reply or ""))
                 context.add_turn(original, reply or "", intent)
                 save_conversation(original, reply or "")
+                db_append_turn("assistant", str(reply or ""), input_method=input_method, intent=intent)
 
     except SystemExit:
         raise
@@ -1636,6 +1720,30 @@ def process_command(command):
         print("Command execution error:", e)
         set_vision_state("error", text=original, result=str(e))
         speak("I encountered an error processing that command Sir.")
+
+
+# ==================== HUD TEXT INPUT QUEUE POLLER ==================== #
+_last_user_query_id = None
+
+def user_query_poller():
+    """Poll data/user_query.json every 80ms to process queries typed into the holographic HUD."""
+    global _last_user_query_id
+    query_file = os.path.join(SCRIPT_DIR, "data", "user_query.json")
+    while True:
+        try:
+            if os.path.isfile(query_file):
+                with open(query_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                qid = data.get("query_id")
+                qtext = data.get("text", "").strip()
+                if qid and qid != _last_user_query_id and qtext:
+                    _last_user_query_id = qid
+                    print(f"\n[HUD Text Input] Received: '{qtext}'")
+                    # Wake up and process through the unified pipeline
+                    threading.Thread(target=process_command, args=(qtext, "text"), daemon=True).start()
+        except Exception:
+            pass
+        time.sleep(0.08)
 
 
 # ==================== CONTINUOUS CLAP & ACTIVATION ENGINE ==================== #
@@ -1682,7 +1790,14 @@ def is_wake_phrase(text):
 def start_vision():
     global clap_detector
 
-    calibrate_microphone_once(force=True)
+    # Asynchronously initialize local offline Whisper speech model (Zero startup block)
+    init_whisper_async()
+
+    # Asynchronously calibrate microphone
+    threading.Thread(target=calibrate_microphone_once, daemon=True).start()
+
+    # Start HUD text input query poller for unified voice + text pipeline
+    threading.Thread(target=user_query_poller, name="HUDQueryPoller", daemon=True).start()
 
     # Initialize and start continuous background ClapDetector
     clap_detector = ClapDetector(
@@ -1698,8 +1813,9 @@ def start_vision():
 
     first_boot = True
     print("\n" + "=" * 60)
-    print(">> VISION AI ACTIVE IN BACKGROUND // DOUBLE CLAP TO ACTIVATE <<")
-    print("   (Or press ENTER/SPACE to wake instantly)")
+    print(">> VISION AI ACTIVE // READY FOR VOICE & TEXT INPUT <<")
+    print("   (Double-clap or press ENTER/SPACE to activate voice)")
+    print("   (Type directly in holographic HUD input bar anytime)")
     print("=" * 60 + "\n")
 
     while True:
@@ -1746,10 +1862,14 @@ def main():
         return
 
     try:
-        # 2. Start background voice reminders scheduler
+        # 2. Immediately launch holographic interface (1-2 second launch speed!)
+        open_interface()
+        set_vision_state("standby", "VISION ONLINE // STANDBY", "")
+
+        # 3. Start background voice reminders scheduler
         start_reminder_scheduler(notify_callback=speak)
 
-        # 3. Enter always-active main engine
+        # 4. Enter always-active main engine
         start_vision()
     except (SystemExit, KeyboardInterrupt):
         pass

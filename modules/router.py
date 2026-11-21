@@ -237,7 +237,43 @@ def match_deterministic_intent(user_text: str, context: ConversationContext) -> 
     if re.search(r"\b(?:cancel (?:all )?reminders|clear reminders|delete reminders)\b", cmd, re.I):
         return "cancel_reminders", {}
 
-    # 8. Personal & Project Memory
+    # 8. WhatsApp Integration
+    m_wa_call = re.search(r"\b(?:call|phone|ring)\s+([a-zA-Z0-9_\-\s]+?)\s+on\s+whatsapp\b", raw, re.I)
+    if not m_wa_call:
+        m_wa_call = re.search(r"\bwhatsapp\s+call\s+([a-zA-Z0-9_\-\s]+)\b", raw, re.I)
+    if m_wa_call:
+        return "whatsapp_call", {"contact": m_wa_call.group(1).strip()}
+
+    m_wa_msg = re.search(r"\b(?:send\s+([a-zA-Z0-9_\-\s]+?)\s+(?:a\s+)?message\s+(?:saying|that)\s+(.+)|message\s+([a-zA-Z0-9_\-\s]+?)\s+on\s+whatsapp\s+(?:saying|that)?\s*(.+))\b", raw, re.I)
+    if m_wa_msg:
+        c = m_wa_msg.group(1) or m_wa_msg.group(3)
+        m = m_wa_msg.group(2) or m_wa_msg.group(4)
+        return "whatsapp_message", {"contact": c.strip(), "message": m.strip()}
+
+    m_wa_chat = re.search(r"\b(?:open\s+(?:my\s+)?whatsapp\s+chat\s+with\s+([a-zA-Z0-9_\-\s]+)|open\s+whatsapp\s+for\s+([a-zA-Z0-9_\-\s]+))\b", raw, re.I)
+    if m_wa_chat:
+        c = m_wa_chat.group(1) or m_wa_chat.group(2)
+        return "whatsapp_open_chat", {"contact": c.strip()}
+
+    # 9. Permanent Personal Memory & Preferences
+    if re.search(r"\b(?:what is my name|who am i|what did i tell you about my name|do you know my name|tell me my name)\b", cmd, re.I):
+        return "get_name", {}
+
+    m_name = re.search(r"\b(?:remember that my name is|actually,? my (?:preferred )?name is|my name is|call me)\s+([a-zA-Z]+)\b", raw, re.I)
+    if m_name:
+        return "set_name", {"name": m_name.group(1).strip().title()}
+
+    m_rem_pref = re.search(r"\bremember that i prefer\s+(.+)\b", raw, re.I)
+    if m_rem_pref:
+        return "save_preference", {"preference": m_rem_pref.group(1).strip()}
+
+    if re.search(r"\b(?:show (?:me )?what you remember|what do you remember(?: about me)?|show memories|list memories)\b", cmd, re.I):
+        return "list_memories", {}
+
+    m_forget = re.search(r"\b(?:forget (?:my )?(?:previous )?(?:preference|name|notes?)|forget that)\s*(.*)\b", cmd, re.I)
+    if m_forget:
+        return "forget_memory", {"query": m_forget.group(1).strip()}
+
     m_proj_note = re.search(r"\bremember (?:this )?(?:for |in )?(?:our |my |the )?(?:current )?project[:\s]*(.*)\b", raw, re.I)
     if m_proj_note:
         note_text = m_proj_note.group(1).strip() or raw_clean
@@ -252,13 +288,6 @@ def match_deterministic_intent(user_text: str, context: ConversationContext) -> 
 
     if re.search(r"\b(?:clear (?:my )?notes|delete (?:my )?notes|erase notes)\b", cmd, re.I):
         return "clear_notes", {}
-
-    name_match = re.search(r"\b(?:my name is|call me|mera naam)\s+([a-zA-Z]+)\b", raw, re.I)
-    if name_match:
-        return "set_name", {"name": name_match.group(1).title()}
-
-    if re.search(r"\b(?:what is my name|who am i|mera naam kya hai)\b", cmd, re.I):
-        return "get_name", {}
 
     # 9. Application and Website Management
     # Contextual Close ('close it', 'close that app')

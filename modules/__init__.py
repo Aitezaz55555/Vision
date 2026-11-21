@@ -24,7 +24,13 @@ __all__ = [
     "split_stream_into_sentences", "clean_text_for_speech", "BARGE_IN_KEYWORDS",
     "detect_conversation_mode", "build_system_prompt", "prepare_chat_messages",
     "stream_ollama_tokens", "HandTracker", "TrackingTelemetry", "SingleHandInfo",
-    "ParticleSystem", "RippleWave"
+    "ParticleSystem", "RippleWave", "transcribe_audio", "init_whisper_async",
+    "is_whisper_ready", "configure_audio_recognizer", "save_memory", "get_memory",
+    "search_memories", "list_all_memories", "delete_memory", "append_conversation_turn",
+    "get_recent_turns", "build_memory_context_prompt", "list_open_windows",
+    "find_window_by_name", "focus_window", "send_shortcut", "type_text_native",
+    "prepare_whatsapp_message", "execute_whatsapp_message", "prepare_whatsapp_call",
+    "execute_whatsapp_call", "open_whatsapp_chat"
 ]
 
 _MODULE_MAP = {
@@ -81,6 +87,28 @@ _MODULE_MAP = {
     "SingleHandInfo": "modules.hand_tracking",
     "ParticleSystem": "modules.particles",
     "RippleWave": "modules.particles",
+    "transcribe_audio": "modules.stt",
+    "init_whisper_async": "modules.stt",
+    "is_whisper_ready": "modules.stt",
+    "configure_audio_recognizer": "modules.stt",
+    "save_memory": "modules.memory_db",
+    "get_memory": "modules.memory_db",
+    "search_memories": "modules.memory_db",
+    "list_all_memories": "modules.memory_db",
+    "delete_memory": "modules.memory_db",
+    "append_conversation_turn": "modules.memory_db",
+    "get_recent_turns": "modules.memory_db",
+    "build_memory_context_prompt": "modules.memory_db",
+    "list_open_windows": "modules.app_automation",
+    "find_window_by_name": "modules.app_automation",
+    "focus_window": "modules.app_automation",
+    "send_shortcut": "modules.app_automation",
+    "type_text_native": "modules.app_automation",
+    "prepare_whatsapp_message": "modules.whatsapp",
+    "execute_whatsapp_message": "modules.whatsapp",
+    "prepare_whatsapp_call": "modules.whatsapp",
+    "execute_whatsapp_call": "modules.whatsapp",
+    "open_whatsapp_chat": "modules.whatsapp",
 }
 
 def __getattr__(name: str) -> Any:
