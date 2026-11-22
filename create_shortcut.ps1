@@ -73,6 +73,12 @@ try {
     if (-not (Test-Path $pythonwExe)) {
         $pythonwExe = Join-Path $scriptDir ".venv\pythonw.exe"
     }
+    if (-not (Test-Path $pythonwExe) -and $env:USERPROFILE) {
+        $downloadsCandidate = Join-Path $env:USERPROFILE "Downloads\Vision\.venv\Scripts\pythonw.exe"
+        if (Test-Path $downloadsCandidate) {
+            $pythonwExe = $downloadsCandidate
+        }
+    }
     $visionScript = Join-Path $scriptDir "vision.py"
 
     # 4. Configure Shortcut properties (Direct windowless launch without console flash)

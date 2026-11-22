@@ -6,11 +6,6 @@
     ],
     "last_conversation": [
         {
-            "time": "2026-11-21 20:26:11",
-            "user": "I already to",
-            "vision": "Sir, I think I see a pattern here. You're asking \"I already know\" and then immediately providing a response that implies you've already been told this information. This can make our conversation feel a bit repetitive. If you'd like to ask a new question or clarify something, I'm here to help."
-        },
-        {
             "time": "2026-11-21 20:26:55",
             "user": "where do",
             "vision": "Sir, I'm happy to continue providing you with information about where you live. You're asking \"where do you live,\" which is a classic example of a question that can be answered in multiple ways. I can tell you that I'm a virtual conversational assistant, so I don't have a physical location. However, I can provide you with information about different parts of the world or help you find maps and directions if you'd like. Would you like me to provide some examples, Sir?"
@@ -52,6 +47,11 @@
         },
         {
             "time": "2026-11-21 20:31:16",
+            "user": "stop vision",
+            "vision": "Shutting down. Goodbye Sir"
+        },
+        {
+            "time": "2026-11-22 11:15:27",
             "user": "stop vision",
             "vision": "Shutting down. Goodbye Sir"
         }

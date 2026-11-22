@@ -9,7 +9,13 @@ If Not fso.FileExists(pythonwExe) Then
     pythonwExe = fso.BuildPath(scriptDir, ".venv\pythonw.exe")
 End If
 If Not fso.FileExists(pythonwExe) Then
-    pythonwExe = "pythonw.exe"
+    Dim downloadsVenv
+    downloadsVenv = WshShell.ExpandEnvironmentStrings("%USERPROFILE%\Downloads\Vision\.venv\Scripts\pythonw.exe")
+    If fso.FileExists(downloadsVenv) Then
+        pythonwExe = downloadsVenv
+    Else
+        pythonwExe = "pythonw.exe"
+    End If
 End If
 
 visionPy = fso.BuildPath(scriptDir, "vision.py")

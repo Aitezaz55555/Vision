@@ -13,7 +13,12 @@ if sys.platform == "win32":
     try:
         import ctypes
         # Suppress OS-level Bad Image and Critical Error modal dialogs so Python handles them cleanly
-        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+        flags = 0x0001 | 0x0002 | 0x8000
+        ctypes.windll.kernel32.SetErrorMode(flags)
+        try:
+            ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -821,94 +826,152 @@ def draw_chat_history_overlay(img, W, H, K):
 
 
 def draw_holographic_input_bar(img, W, H, K, now):
-    """Render futuristic glowing input bar at the bottom with SEND and CLR buttons."""
-    bar_w = int(min(W * 0.74, 880 * K))
-    bar_h = int(38 * K)
+    """Render high-tech cyberpunk glowing holographic search/command bar with neon styling and HUD telemetry."""
+    bar_w = int(min(W * 0.76, 920 * K))
+    bar_h = int(42 * K)
     x0 = (W - bar_w) // 2
-    y0 = H - int(50 * K)
+    y0 = H - int(56 * K)
 
     _INPUT_STATE["bar_rect"] = (x0, y0, bar_w, bar_h)
 
-    # Button dimensions
-    btn_w = int(58 * K)
-    btn_h = bar_h - int(8 * K)
-    btn_y = y0 + int(4 * K)
-    send_x = x0 + bar_w - btn_w - int(6 * K)
-    clr_x = send_x - btn_w - int(6 * K)
+    # Action Button dimensions
+    btn_w = int(68 * K)
+    btn_h = bar_h - int(10 * K)
+    btn_y = y0 + int(5 * K)
+    send_x = x0 + bar_w - btn_w - int(8 * K)
+    clr_x = send_x - btn_w - int(8 * K)
     _INPUT_STATE["send_rect"] = (send_x, btn_y, btn_w, btn_h)
     _INPUT_STATE["clear_rect"] = (clr_x, btn_y, btn_w, btn_h)
 
-    # Glass background
+    # 1. Subtle Outer Glow Halo (breathing neon bloom)
+    pulse = 0.55 + 0.45 * math.sin(now * 3.2)
+    glow_expand = int(4 * K)
+    glow_col = col(C_BRIGHT, 0.22 * pulse) if _INPUT_STATE["active"] else col(C_MID, 0.12 * pulse)
     overlay = img.copy()
-    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), (8, 14, 24), -1)
-    # Glowing border
-    border_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["active"] else col(C_MID, 0.6)
-    border_th = 2 if _INPUT_STATE["active"] else 1
-    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), border_col, border_th)
-    cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+    cv2.rectangle(overlay, (x0 - glow_expand, y0 - glow_expand),
+                  (x0 + bar_w + glow_expand, y0 + bar_h + glow_expand), glow_col, -1)
 
-    # Corner brackets for futuristic aesthetic
-    c_len = int(8 * K)
-    cv2.line(img, (x0, y0), (x0 + c_len, y0), border_col, 2)
-    cv2.line(img, (x0, y0), (x0, y0 + c_len), border_col, 2)
-    cv2.line(img, (x0 + bar_w, y0), (x0 + bar_w - c_len, y0), border_col, 2)
-    cv2.line(img, (x0 + bar_w, y0), (x0 + bar_w, y0 + c_len), border_col, 2)
-    cv2.line(img, (x0, y0 + bar_h), (x0 + c_len, y0 + bar_h), border_col, 2)
-    cv2.line(img, (x0, y0 + bar_h), (x0, y0 + bar_h - c_len), border_col, 2)
-    cv2.line(img, (x0 + bar_w, y0 + bar_h), (x0 + bar_w - c_len, y0 + bar_h), border_col, 2)
-    cv2.line(img, (x0 + bar_w, y0 + bar_h), (x0 + bar_w, y0 + bar_h - c_len), border_col, 2)
+    # 2. Glassmorphic Translucent Dark Navy Body
+    body_col = (14, 20, 32) if _INPUT_STATE["active"] else (8, 12, 22)
+    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), body_col, -1)
 
-    # Prompt icon / prefix
-    prefix = ">_ "
+    # 3. Top Cyber Bevel Highlight (horizontal light rail)
+    top_rail_col = col(C_BRIGHT, 0.45 if _INPUT_STATE["active"] else 0.25)
+    cv2.line(overlay, (x0 + int(12 * K), y0 + 1), (x0 + bar_w - int(12 * K), y0 + 1), top_rail_col, 1)
+
+    cv2.addWeighted(overlay, 0.78, img, 0.22, 0, img)
+
+    # 4. Precision Tech Borders (Dual-rail cyberpunk border)
+    border_main = col(C_BRIGHT, 0.95 if _INPUT_STATE["active"] else 0.65)
+    border_inner = col(C_MID, 0.40 if _INPUT_STATE["active"] else 0.25)
+    cv2.rectangle(img, (x0, y0), (x0 + bar_w, y0 + bar_h), border_main, 1, cv2.LINE_AA)
+    cv2.rectangle(img, (x0 + 2, y0 + 2), (x0 + bar_w - 2, y0 + bar_h - 2), border_inner, 1, cv2.LINE_AA)
+
+    # 5. Sci-Fi Chamfer Corner Targeting Reticles
+    c_len = int(12 * K)
+    reticle_col = col(C_BRIGHT, 1.0)
+    # Top-Left Reticle
+    cv2.line(img, (x0 - 2, y0), (x0 + c_len, y0), reticle_col, 2)
+    cv2.line(img, (x0, y0 - 2), (x0, y0 + c_len), reticle_col, 2)
+    # Top-Right Reticle
+    cv2.line(img, (x0 + bar_w - c_len, y0), (x0 + bar_w + 2, y0), reticle_col, 2)
+    cv2.line(img, (x0 + bar_w, y0 - 2), (x0 + bar_w, y0 + c_len), reticle_col, 2)
+    # Bottom-Left Reticle
+    cv2.line(img, (x0 - 2, y0 + bar_h), (x0 + c_len, y0 + bar_h), reticle_col, 2)
+    cv2.line(img, (x0, y0 + bar_h - c_len), (x0, y0 + bar_h + 2), reticle_col, 2)
+    # Bottom-Right Reticle
+    cv2.line(img, (x0 + bar_w - c_len, y0 + bar_h), (x0 + bar_w + 2, y0 + bar_h), reticle_col, 2)
+    cv2.line(img, (x0 + bar_w, y0 + bar_h - c_len), (x0 + bar_w, y0 + bar_h + 2), reticle_col, 2)
+
+    # 6. Upper Telemetry Header Badge
+    badge_fs = 0.34 * K
+    status_tag = "SYS // INPUT_CHANNEL: ACTIVE" if _INPUT_STATE["active"] else "SYS // INPUT_CHANNEL: READY"
+    dot_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["active"] else col(C_MID, 0.75)
+    cv2.circle(img, (x0 + int(8 * K), y0 - int(6 * K)), int(3 * K), dot_col, -1, cv2.LINE_AA)
+    cv2.putText(img, status_tag, (x0 + int(16 * K), y0 - int(4 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_TEXT, 0.85), 1, cv2.LINE_AA)
+
+    link_tag = "[ PROTOCOL // DIRECT_LINK ]"
+    lt_w, _ = cv2.getTextSize(link_tag, cv2.FONT_HERSHEY_SIMPLEX, badge_fs, 1)[0]
+    cv2.putText(img, link_tag, (x0 + bar_w - lt_w - int(4 * K), y0 - int(4 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_MID, 0.60), 1, cv2.LINE_AA)
+
+    # 7. Holographic Prompt Terminal Glyph
+    prefix = "⚡ > "
     fs = 0.50 * K
-    cv2.putText(img, prefix, (x0 + int(12 * K), y0 + int(24 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_BRIGHT, 0.95), 1, cv2.LINE_AA)
+    cv2.putText(img, prefix, (x0 + int(14 * K), y0 + int(27 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_BRIGHT, 1.0), 1, cv2.LINE_AA)
     pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
-    text_x = x0 + int(12 * K) + pw
+    text_x = x0 + int(14 * K) + pw
 
-    # Text or Placeholder
+    # 8. User Input String or Responsive Placeholder
     if _INPUT_STATE["text"]:
         disp = _INPUT_STATE["text"]
-        # Limit visible text width so it doesn't overlap buttons
-        max_px = clr_x - text_x - int(10 * K)
+        max_px = clr_x - text_x - int(12 * K)
         tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
         while tw > max_px and len(disp) > 1:
             disp = disp[1:]
             tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
 
-        cv2.putText(img, disp, (text_x, y0 + int(24 * K)),
+        cv2.putText(img, disp, (text_x, y0 + int(27 * K)),
                     cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_WHITE, 1.0), 1, cv2.LINE_AA)
-        
-        # Cursor
+
+        # High-tech Blinking Neon Cursor
         if _INPUT_STATE["active"]:
-            if now - _INPUT_STATE["last_blink"] > 0.45:
+            if now - _INPUT_STATE["last_blink"] > 0.42:
                 _INPUT_STATE["cursor_visible"] = not _INPUT_STATE["cursor_visible"]
                 _INPUT_STATE["last_blink"] = now
             if _INPUT_STATE["cursor_visible"]:
-                cur_x = text_x + tw + 2
-                cv2.line(img, (cur_x, y0 + int(8 * K)), (cur_x, y0 + bar_h - int(8 * K)),
-                         col(C_BRIGHT, 1.0), 2)
+                cur_x = text_x + tw + 3
+                cv2.line(img, (cur_x, y0 + int(9 * K)), (cur_x, y0 + bar_h - int(9 * K)),
+                         col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
+                cv2.circle(img, (cur_x, y0 + int(8 * K)), 1, col(C_WHITE, 1.0), -1)
     else:
-        placeholder = "Type message or command... (Click or press '/' to type, Enter to send)"
+        placeholder = "Type message or command... (Click or press '/' to type, Enter to execute)"
         if _INPUT_STATE["active"]:
-            placeholder = "Type instruction... (Press Enter to execute)"
-        cv2.putText(img, placeholder, (text_x, y0 + int(24 * K)),
-                    cv2.FONT_HERSHEY_SIMPLEX, fs * 0.90, col(C_MID, 0.65), 1, cv2.LINE_AA)
+            placeholder = "Enter instruction... (Press Enter to execute, Esc to blur)"
+        cv2.putText(img, placeholder, (text_x, y0 + int(27 * K)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs * 0.88, col(C_MID, 0.70), 1, cv2.LINE_AA)
         if _INPUT_STATE["active"]:
-            cv2.line(img, (text_x, y0 + int(8 * K)), (text_x, y0 + bar_h - int(8 * K)),
-                     col(C_BRIGHT, 1.0), 2)
+            cv2.line(img, (text_x, y0 + int(9 * K)), (text_x, y0 + bar_h - int(9 * K)),
+                     col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
 
-    # [CLR] button
-    clr_col = col(C_BRIGHT, 0.85) if _INPUT_STATE["clear_hover"] else col(C_MID, 0.5)
-    cv2.rectangle(img, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), clr_col, 1)
-    cv2.putText(img, "CLR", (clr_x + int(12 * K), btn_y + int(20 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40 * K, clr_col, 1, cv2.LINE_AA)
+    # 9. Polished [CLR] Button
+    btn_fs = 0.40 * K
+    clr_hover = _INPUT_STATE.get("clear_hover", False)
+    if clr_hover:
+        clr_fill = img.copy()
+        cv2.rectangle(clr_fill, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), (35, 45, 95), -1)
+        cv2.addWeighted(clr_fill, 0.7, img, 0.3, 0, img)
+        clr_border = col((100, 140, 255), 1.0)
+        clr_text_col = col(C_WHITE, 1.0)
+    else:
+        clr_border = col(C_MID, 0.55)
+        clr_text_col = col(C_TEXT, 0.75)
+    cv2.rectangle(img, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), clr_border, 1, cv2.LINE_AA)
+    clr_label = "✕ CLR"
+    cl_w, _ = cv2.getTextSize(clr_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, clr_label, (clr_x + (btn_w - cl_w) // 2, btn_y + int(21 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, clr_text_col, 1, cv2.LINE_AA)
 
-    # [SEND] button
-    send_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["send_hover"] else col(C_MID, 0.75)
-    cv2.rectangle(img, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), send_col, 1)
-    cv2.putText(img, "SEND", (send_x + int(9 * K), btn_y + int(20 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40 * K, send_col, 1, cv2.LINE_AA)
+    # 10. Polished [SEND] Button
+    send_hover = _INPUT_STATE.get("send_hover", False)
+    if send_hover:
+        send_fill = img.copy()
+        cv2.rectangle(send_fill, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), (95, 75, 20), -1)
+        cv2.addWeighted(send_fill, 0.75, img, 0.25, 0, img)
+        send_border = col(C_BRIGHT, 1.0)
+        send_text_col = col(C_WHITE, 1.0)
+    else:
+        send_border = col(C_BRIGHT, 0.75) if _INPUT_STATE["active"] else col(C_MID, 0.65)
+        send_text_col = col(C_BRIGHT, 0.95)
+    cv2.rectangle(img, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), send_border, 1, cv2.LINE_AA)
+    if send_hover:
+        cv2.rectangle(img, (send_x + 2, btn_y + 2), (send_x + btn_w - 2, btn_y + btn_h - 2), col(C_WHITE, 0.6), 1, cv2.LINE_AA)
+    send_label = "► SEND"
+    sl_w, _ = cv2.getTextSize(send_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, send_label, (send_x + (btn_w - sl_w) // 2, btn_y + int(21 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, send_text_col, 1, cv2.LINE_AA)
 
 
 def on_mouse(ev, x, y, flags, _):
@@ -1009,11 +1072,33 @@ def apply_window_icon(window_name=WIN):
 
 
 def main():
-    tracker = HandTracker()
-    particle_system = ParticleSystem(count=240)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            flags = 0x0001 | 0x0002 | 0x8000
+            ctypes.windll.kernel32.SetErrorMode(flags)
+            try:
+                ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # Open window and immediately render initial dark holographic frame so the window is never a white box
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WIN, W, H)
     apply_window_icon(WIN)
+
+    init_frame = np.zeros((H, W, 3), dtype=np.uint8)
+    cv2.circle(init_frame, (W // 2, H // 2), int(72 * K), C_MID, 2, cv2.LINE_AA)
+    cv2.circle(init_frame, (W // 2, H // 2), int(108 * K), C_DEEP, 1, cv2.LINE_AA)
+    cv2.putText(init_frame, "VISION // INITIALIZING HOLOGRAPHIC CORE...", (W // 2 - int(210 * K), H // 2 + int(125 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52 * K, C_TEXT, 1, cv2.LINE_AA)
+    cv2.imshow(WIN, init_frame)
+    cv2.waitKey(1)
+
+    tracker = HandTracker()
+    particle_system = ParticleSystem(count=240)
     cv2.setMouseCallback(WIN, on_mouse)
     full = False                       # press F to toggle fullscreen
     t0 = last = time.time()

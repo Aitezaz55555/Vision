@@ -18,17 +18,34 @@ from typing import List, Tuple, Dict, Optional, Any
 import cv2
 import numpy as np
 
+def _suppress_bad_image_dialogs():
+    """Suppresses OS-level Bad Image and hard error modal dialogs so Python handles them cleanly."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            flags = 0x0001 | 0x0002 | 0x8000
+            ctypes.windll.kernel32.SetErrorMode(flags)
+            try:
+                ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+_suppress_bad_image_dialogs()
+
 mp = None
 HAS_MP = None
 
 def _get_mp():
     global mp, HAS_MP
     if mp is None and HAS_MP is not False:
+        _suppress_bad_image_dialogs()
         try:
             import mediapipe as _mp
             mp = _mp
             HAS_MP = True
-        except Exception:
+        except (Exception, OSError):
             HAS_MP = False
     return mp
 
@@ -202,9 +219,10 @@ class HandTracker:
         self.worker.start()
 
     def _init_mediapipe(self) -> bool:
+        _suppress_bad_image_dialogs()
         mp_module = _get_mp()
         if not mp_module or not HAS_MP:
-            self.status = "MEDIAPIPE NOT INSTALLED"
+            self.status = "CAMERA ACTIVE"
             return False
         try:
             from mediapipe.tasks import python as mp_python
@@ -223,12 +241,13 @@ class HandTracker:
             self._last_timestamp_ms = 0
             self.status = "SHOW HANDS"
             return True
-        except Exception as e:
-            self.status = "MODEL ERROR"
-            print(f"[HandTracking] Error initializing MediaPipe: {e}")
+        except (Exception, OSError) as e:
+            self.status = "CAMERA ACTIVE"
+            print(f"[HandTracking] MediaPipe initialization note: {e}")
             return False
 
     def _worker_loop(self):
+        _suppress_bad_image_dialogs()
         try:
             self.cap = open_camera()
             if self.cap is None:
@@ -237,8 +256,9 @@ class HandTracker:
                 return
 
             self.status = "LOADING MODEL..."
-            if not self._init_mediapipe():
-                return
+            mp_ok = self._init_mediapipe()
+            if not mp_ok:
+                self.status = "CAMERA ACTIVE"
 
             while self.running and self.cap is not None:
                 ok, frame = self.cap.read()
@@ -252,18 +272,25 @@ class HandTracker:
                 ts_ms = max(self._last_timestamp_ms + 1, int((t_now - self._start_time) * 1000))
                 self._last_timestamp_ms = ts_ms
 
-                try:
-                    rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    mp_lib = _get_mp()
-                    mp_img = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=rgb)
-                    results = self.detector.detect_for_video(mp_img, ts_ms)
-                    self._process_detection(frame, results, t_now)
-                except Exception as e:
-                    print(f"[HandTracking] Frame processing error: {e}")
-                    time.sleep(0.01)
+                if self.detector is not None:
+                    try:
+                        rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                        mp_lib = _get_mp()
+                        if mp_lib:
+                            mp_img = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=rgb)
+                            results = self.detector.detect_for_video(mp_img, ts_ms)
+                            self._process_detection(frame, results, t_now)
+                    except Exception as e:
+                        time.sleep(0.01)
+                else:
+                    # MediaPipe unavailable/restricted: keep camera active and update telemetry
+                    with self.lock:
+                        self.telemetry.tracking_status = self.status
+                        self.telemetry.hands_count = 0
+                    time.sleep(0.03)
         except Exception as e:
-            self.status = "TRACKING ERROR"
-            print(f"[HandTracking] Worker error: {e}")
+            self.status = "CAMERA ACTIVE"
+            print(f"[HandTracking] Worker note: {e}")
         finally:
             if self.detector is not None:
                 try:

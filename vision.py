@@ -19,7 +19,12 @@ if sys.platform == "win32":
     try:
         import ctypes
         # Suppress OS-level Bad Image and Critical Error modal dialogs so Python handles them cleanly
-        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+        flags = 0x0001 | 0x0002 | 0x8000
+        ctypes.windll.kernel32.SetErrorMode(flags)
+        try:
+            ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1784,7 +1789,23 @@ def keyboard_activation_listener():
 
 def is_wake_phrase(text):
     t = re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", text.lower())).strip()
-    return any(p in t for p in WAKE_PHRASES) or t in ("vision", "hey vision")
+    return any(p in t for p in WAKE_PHRASES) or t in ("vision", "hey vision", "jarvis")
+
+
+def wake_word_background_listener():
+    """Continuous background listener that detects wake phrases ('Vision', 'Hey Vision', 'Jarvis') while in standby."""
+    while True:
+        try:
+            if get_vision_state() == "monitoring":
+                phrase = listen_for_wake_word()
+                if phrase and is_wake_phrase(phrase):
+                    print(f"\n[Voice Activation] Wake phrase recognized: '{phrase}'")
+                    set_vision_state("wake_word_detected")
+                    play_activation_chime()
+                    activation_trigger_event.set()
+        except Exception:
+            pass
+        time.sleep(0.15)
 
 
 def start_vision():
@@ -1793,11 +1814,17 @@ def start_vision():
     # Asynchronously initialize local offline Whisper speech model (Zero startup block)
     init_whisper_async()
 
+    # Asynchronously ensure local Ollama service is warm and ready
+    threading.Thread(target=start_ollama_service, name="OllamaStarter", daemon=True).start()
+
     # Asynchronously calibrate microphone
     threading.Thread(target=calibrate_microphone_once, daemon=True).start()
 
     # Start HUD text input query poller for unified voice + text pipeline
     threading.Thread(target=user_query_poller, name="HUDQueryPoller", daemon=True).start()
+
+    # Start continuous background wake-phrase listener ('Vision', 'Hey Vision', 'Jarvis')
+    threading.Thread(target=wake_word_background_listener, name="WakeWordListener", daemon=True).start()
 
     # Initialize and start continuous background ClapDetector
     clap_detector = ClapDetector(
@@ -1811,10 +1838,13 @@ def start_vision():
     # Start non-blocking keyboard listener thread
     threading.Thread(target=keyboard_activation_listener, daemon=True).start()
 
+    # Immediately show holographic interface HUD on startup
+    open_interface()
+
     first_boot = True
     print("\n" + "=" * 60)
     print(">> VISION AI ACTIVE // READY FOR VOICE & TEXT INPUT <<")
-    print("   (Double-clap or press ENTER/SPACE to activate voice)")
+    print("   (Say 'Vision', double-clap, or press ENTER/SPACE to activate voice)")
     print("   (Type directly in holographic HUD input bar anytime)")
     print("=" * 60 + "\n")
 
