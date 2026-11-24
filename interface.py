@@ -810,25 +810,28 @@ def submit_text_input(query_text: str):
 
 
 def draw_chat_history_overlay(img, W, H, K):
-    """Render floating holographic dialogue history above the input bar."""
+    """Render floating holographic dialogue history above the input bar with smooth rounded corners."""
     history = _INPUT_STATE["chat_history"]
     if not history:
         return
 
-    hist_w = int(min(W * 0.74, 880 * K))
+    hist_w = int(min(W * 0.78, 920 * K))
     x0 = (W - hist_w) // 2
-    bar_y = H - int(55 * K)
-    
+    is_multi = "\n" in _INPUT_STATE["text"]
+    console_h = int(72 * K) if is_multi else int(54 * K)
+    bar_top = H - console_h - int(44 * K)
+
     # Calculate box height based on items
     items_to_show = history[-3:]
     box_h = len(items_to_show) * int(22 * K) + int(14 * K)
-    y0 = max(int(60 * K), bar_y - box_h - int(8 * K))
+    y0 = max(int(60 * K), bar_top - box_h - int(10 * K))
+    r_hist = int(8 * K)
 
-    # Translucent glass backing
+    # Translucent rounded glass backing
     overlay = img.copy()
-    cv2.rectangle(overlay, (x0, y0), (x0 + hist_w, y0 + box_h), (10, 16, 28), -1)
-    cv2.rectangle(overlay, (x0, y0), (x0 + hist_w, y0 + box_h), col(C_MID, 0.45), 1)
-    cv2.addWeighted(overlay, 0.70, img, 0.30, 0, img)
+    draw_rounded_rect(overlay, x0, y0, x0 + hist_w, y0 + box_h, (12, 18, 30), r_hist, -1)
+    cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+    draw_rounded_rect(img, x0, y0, x0 + hist_w, y0 + box_h, col(C_MID, 0.50), r_hist, 1)
 
     # Render entries
     curr_y = y0 + int(18 * K)
@@ -837,156 +840,200 @@ def draw_chat_history_overlay(img, W, H, K):
         prefix = f"[{role}]: "
         fs = 0.46 * K
         # Draw prefix
-        cv2.putText(img, prefix, (x0 + int(10 * K), curr_y),
+        cv2.putText(img, prefix, (x0 + int(12 * K), curr_y),
                     cv2.FONT_HERSHEY_SIMPLEX, fs, col(role_col, 0.95), 1, cv2.LINE_AA)
         pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
         # Draw message content (truncated to fit box)
         max_chars = int(hist_w / (8.5 * K))
         disp_text = text if len(text) <= max_chars else text[:max_chars - 3] + "..."
         text_col = col(C_TEXT if role == "YOU" else C_WHITE, 0.90)
-        cv2.putText(img, disp_text, (x0 + int(10 * K) + pw, curr_y),
+        cv2.putText(img, disp_text, (x0 + int(12 * K) + pw, curr_y),
                     cv2.FONT_HERSHEY_SIMPLEX, fs, text_col, 1, cv2.LINE_AA)
         curr_y += int(22 * K)
 
 
+def draw_rounded_rect(img, x1, y1, x2, y2, color, radius=8, thickness=-1):
+    """Draws an anti-aliased smooth rounded rectangle (filled or outlined) on an OpenCV image."""
+    r = int(max(1, min(radius, (x2 - x1) // 2, (y2 - y1) // 2)))
+    if thickness == -1:
+        # Filled rounded rectangle
+        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
+        cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, -1)
+        cv2.circle(img, (x1 + r, y1 + r), r, color, -1, cv2.LINE_AA)
+        cv2.circle(img, (x2 - r, y1 + r), r, color, -1, cv2.LINE_AA)
+        cv2.circle(img, (x1 + r, y2 - r), r, color, -1, cv2.LINE_AA)
+        cv2.circle(img, (x2 - r, y2 - r), r, color, -1, cv2.LINE_AA)
+    else:
+        # Outlined rounded rectangle
+        cv2.line(img, (x1 + r, y1), (x2 - r, y1), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x1 + r, y2), (x2 - r, y2), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x1, y1 + r), (x1, y2 - r), color, thickness, cv2.LINE_AA)
+        cv2.line(img, (x2, y1 + r), (x2, y2 - r), color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x1 + r, y1 + r), (r, r), 180, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness, cv2.LINE_AA)
+        cv2.ellipse(img, (x1 + r, y2 - r), (r, r), 90, 0, 90, color, thickness, cv2.LINE_AA)
+
+
 def draw_holographic_input_bar(img, W, H, K, now):
-    """Render high-tech cyberpunk elevated glass command console with live mic status, multiline text, and action buttons."""
-    # Check if multiline input to adjust console height dynamically
+    """
+    Render premium, elevated cyberpunk AI command console.
+    Features frosted obsidian glass, rounded corners, inset slot, animated audio equalizer,
+    live mic status pills, multiline input, and tactile quick-action buttons ([TALK], [STOP], [CLR], [SEND]).
+    """
     is_multiline = "\n" in _INPUT_STATE["text"]
-    bar_w = int(min(W * 0.88, 1040 * K))
-    bar_h = int(68 * K) if is_multiline else int(48 * K)
+    bar_w = int(min(W * 0.90, 1080 * K))
+    bar_h = int(72 * K) if is_multiline else int(54 * K)
     x0 = (W - bar_w) // 2
-    y0 = H - bar_h - int(12 * K)
+    y0 = H - bar_h - int(16 * K)
+    r_panel = int(10 * K)
 
     _INPUT_STATE["bar_rect"] = (x0, y0, bar_w, bar_h)
 
-    # Action Button dimensions (4 buttons: TALK, STOP, CLR, SEND)
+    # Action Button dimensions
     btn_w = int(66 * K)
-    btn_h = int(32 * K)
+    btn_h = int(34 * K)
     btn_y = y0 + (bar_h - btn_h) // 2
-    send_x = x0 + bar_w - btn_w - int(8 * K)
-    clr_x = send_x - btn_w - int(6 * K)
+    btn_r = int(6 * K)
+
+    send_x = x0 + bar_w - btn_w - int(10 * K)
+    clr_x = send_x - int(58 * K) - int(6 * K)
     stop_x = clr_x - btn_w - int(6 * K)
     talk_x = stop_x - btn_w - int(6 * K)
 
     _INPUT_STATE["send_rect"] = (send_x, btn_y, btn_w, btn_h)
-    _INPUT_STATE["clear_rect"] = (clr_x, btn_y, btn_w, btn_h)
+    _INPUT_STATE["clear_rect"] = (clr_x, btn_y, int(58 * K), btn_h)
     _INPUT_STATE["stop_rect"] = (stop_x, btn_y, btn_w, btn_h)
     _INPUT_STATE["talk_rect"] = (talk_x, btn_y, btn_w, btn_h)
 
     # 1. Subtle Outer Glow Halo (breathing neon bloom)
-    pulse = 0.55 + 0.45 * math.sin(now * 3.2)
+    pulse = 0.55 + 0.45 * math.sin(now * 3.4)
     glow_expand = int(5 * K)
-    glow_col = col(C_BRIGHT, 0.22 * pulse) if _INPUT_STATE["active"] else col(C_MID, 0.10 * pulse)
+    glow_col = col(C_BRIGHT, 0.20 * pulse) if _INPUT_STATE["active"] else col(C_MID, 0.09 * pulse)
     overlay = img.copy()
-    cv2.rectangle(overlay, (x0 - glow_expand, y0 - glow_expand),
-                  (x0 + bar_w + glow_expand, y0 + bar_h + glow_expand), glow_col, -1)
+    draw_rounded_rect(overlay, x0 - glow_expand, y0 - glow_expand,
+                      x0 + bar_w + glow_expand, y0 + bar_h + glow_expand, glow_col, r_panel + glow_expand, -1)
 
     # 2. Elevated Glassmorphic Deep Obsidian Console Body
-    body_col = (14, 20, 32) if _INPUT_STATE["active"] else (8, 12, 22)
-    cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), body_col, -1)
+    body_col = (18, 24, 38) if _INPUT_STATE["active"] else (12, 16, 26)
+    draw_rounded_rect(overlay, x0, y0, x0 + bar_w, y0 + bar_h, body_col, r_panel, -1)
 
-    # 3. Top Cyber Bevel Highlight (horizontal light rail)
-    top_rail_col = col(C_BRIGHT, 0.55 if _INPUT_STATE["active"] else 0.30)
-    cv2.line(overlay, (x0 + int(12 * K), y0 + 1), (x0 + bar_w - int(12 * K), y0 + 1), top_rail_col, 1)
+    # 3. Top Cyber Light Rail
+    top_rail_col = col(C_BRIGHT, 0.65 if _INPUT_STATE["active"] else 0.35)
+    cv2.line(overlay, (x0 + r_panel + int(6 * K), y0 + 1), (x0 + bar_w - r_panel - int(6 * K), y0 + 1), top_rail_col, 1)
 
-    cv2.addWeighted(overlay, 0.80, img, 0.20, 0, img)
+    cv2.addWeighted(overlay, 0.82, img, 0.18, 0, img)
 
-    # 4. Precision Tech Borders (Dual-rail cyberpunk border)
-    border_main = col(C_BRIGHT, 0.95 if _INPUT_STATE["active"] else 0.65)
-    border_inner = col(C_MID, 0.40 if _INPUT_STATE["active"] else 0.22)
-    cv2.rectangle(img, (x0, y0), (x0 + bar_w, y0 + bar_h), border_main, 1, cv2.LINE_AA)
-    cv2.rectangle(img, (x0 + 2, y0 + 2), (x0 + bar_w - 2, y0 + bar_h - 2), border_inner, 1, cv2.LINE_AA)
+    # 4. Precision Rounded Tech Borders
+    border_main = col(C_BRIGHT, 0.95 if _INPUT_STATE["active"] else 0.70)
+    border_inner = col(C_MID, 0.45 if _INPUT_STATE["active"] else 0.25)
+    draw_rounded_rect(img, x0, y0, x0 + bar_w, y0 + bar_h, border_main, r_panel, 1)
+    draw_rounded_rect(img, x0 + 2, y0 + 2, x0 + bar_w - 2, y0 + bar_h - 2, border_inner, r_panel - 2, 1)
 
-    # 5. Sci-Fi Chamfer Corner Reticles
-    c_len = int(12 * K)
-    reticle_col = col(C_BRIGHT, 1.0)
-    # Top-Left Reticle
-    cv2.line(img, (x0 - 2, y0), (x0 + c_len, y0), reticle_col, 2)
-    cv2.line(img, (x0, y0 - 2), (x0, y0 + c_len), reticle_col, 2)
-    # Top-Right Reticle
-    cv2.line(img, (x0 + bar_w - c_len, y0), (x0 + bar_w + 2, y0), reticle_col, 2)
-    cv2.line(img, (x0 + bar_w, y0 - 2), (x0 + bar_w, y0 + c_len), reticle_col, 2)
-    # Bottom-Left Reticle
-    cv2.line(img, (x0 - 2, y0 + bar_h), (x0 + c_len, y0 + bar_h), reticle_col, 2)
-    cv2.line(img, (x0, y0 + bar_h - c_len), (x0, y0 + bar_h + 2), reticle_col, 2)
-    # Bottom-Right Reticle
-    cv2.line(img, (x0 + bar_w - c_len, y0 + bar_h), (x0 + bar_w + 2, y0 + bar_h), reticle_col, 2)
-    cv2.line(img, (x0 + bar_w, y0 + bar_h - c_len), (x0 + bar_w, y0 + bar_h + 2), reticle_col, 2)
-
-    # 6. Upper Telemetry Header: Real-Time Microphone Status Indicator Pill
+    # 5. Upper Status Header & Animated Telemetry Rail
     st_info = get_vision_state_info()
     mic_raw = str(st_info.get("mic_state", "")).upper()
     state_raw = str(st_info.get("state", "")).lower()
 
+    # Determine Live State Pill & Colors
     if state_raw == "speaking" or "SPEAK" in mic_raw:
         pill_dot = (40, 40, 245)
-        pill_text = "● SPEAKING"
+        pill_text = "● VISION SPEAKING"
         pill_border = (60, 60, 255)
+        eq_active = False
     elif "SPEECH DETECTED" in mic_raw or state_raw == "speech_detected":
         pill_dot = (0, 255, 200)
         pill_text = "● SPEECH DETECTED"
         pill_border = (0, 220, 180)
+        eq_active = True
     elif "TRANSCRIB" in mic_raw or state_raw == "transcribing":
         pill_dot = (255, 180, 50)
-        pill_text = "● TRANSCRIBING"
+        pill_text = "● TRANSCRIBING AUDIO"
         pill_border = (240, 160, 40)
+        eq_active = True
     elif "PAUSE" in mic_raw or state_raw in ("processing", "thinking"):
         pill_dot = (0, 215, 255)
-        pill_text = "● MIC: PAUSED"
+        pill_text = "✦ AI PROCESSING..."
         pill_border = (0, 190, 230)
+        eq_active = False
     elif "LISTEN" in mic_raw or state_raw == "listening":
         pill_dot = col(C_BRIGHT, 0.70 + 0.30 * pulse)
-        pill_text = "● MIC: LISTENING"
+        pill_text = "● ACTIVE LISTENING"
         pill_border = col(C_BRIGHT, 0.85)
+        eq_active = True
     elif "INTERRUPT" in mic_raw or state_raw == "interrupted":
         pill_dot = (0, 140, 255)
         pill_text = "■ STOPPED"
         pill_border = (0, 120, 220)
+        eq_active = False
     else:
         pill_dot = col(C_MID, 0.65)
-        pill_text = "○ MIC: STANDBY"
+        pill_text = "○ MIC STANDBY (SAY 'VISION' OR CLICK TALK)"
         pill_border = col(C_MID, 0.45)
+        eq_active = False
 
-    pill_fs = 0.34 * K
+    pill_fs = 0.32 * K
     pill_tw, _ = cv2.getTextSize(pill_text, cv2.FONT_HERSHEY_SIMPLEX, pill_fs, 1)[0]
-    pill_w = pill_tw + int(16 * K)
+    pill_w = pill_tw + int(24 * K)
     pill_h = int(16 * K)
     pill_x = x0 + int(8 * K)
-    pill_y = y0 - pill_h - int(4 * K)
+    pill_y = y0 - pill_h - int(5 * K)
 
-    # Draw Status Pill
-    cv2.rectangle(img, (pill_x, pill_y), (pill_x + pill_w, pill_y + pill_h), pill_border, 1, cv2.LINE_AA)
+    # Draw Status Pill with rounded corners
+    draw_rounded_rect(img, pill_x, pill_y, pill_x + pill_w, pill_y + pill_h, pill_border, int(4 * K), 1)
     cv2.putText(img, pill_text, (pill_x + int(8 * K), pill_y + int(12 * K)),
                 cv2.FONT_HERSHEY_SIMPLEX, pill_fs, pill_dot, 1, cv2.LINE_AA)
 
-    # Right side of telemetry rail: Shortcut Hints
-    link_tag = "SHIFT+ENTER: NEWLINE  |  ENTER: SEND  |  ESC: BLUR"
-    badge_fs = 0.32 * K
-    lt_w, _ = cv2.getTextSize(link_tag, cv2.FONT_HERSHEY_SIMPLEX, badge_fs, 1)[0]
-    cv2.putText(img, link_tag, (x0 + bar_w - lt_w - int(4 * K), y0 - int(5 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_MID, 0.65), 1, cv2.LINE_AA)
+    # Animated Mini Equalizer Bars (||||) when listening or transcribing
+    if eq_active:
+        eq_x = pill_x + pill_w + int(8 * K)
+        eq_y_mid = pill_y + pill_h // 2
+        for bar_idx in range(4):
+            bar_amp = int((4 + 3 * math.sin(now * 8.0 + bar_idx * 1.5)) * K)
+            bx = eq_x + int(bar_idx * 5 * K)
+            cv2.line(img, (bx, eq_y_mid - bar_amp), (bx, eq_y_mid + bar_amp), col(C_BRIGHT, 0.9), 1, cv2.LINE_AA)
+
+    # Right side of status rail: Protocol / Shortcuts
+    hints = "SHIFT+ENTER: NEWLINE  |  ENTER: SEND  |  ESC: BLUR"
+    hint_fs = 0.30 * K
+    ht_w, _ = cv2.getTextSize(hints, cv2.FONT_HERSHEY_SIMPLEX, hint_fs, 1)[0]
+    cv2.putText(img, hints, (x0 + bar_w - ht_w - int(6 * K), y0 - int(5 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, hint_fs, col(C_MID, 0.65), 1, cv2.LINE_AA)
+
+    # 6. Recessed Dark Input Slot (Distinct Inset Field)
+    slot_x1 = x0 + int(10 * K)
+    slot_y1 = y0 + int(7 * K)
+    slot_x2 = talk_x - int(10 * K)
+    slot_y2 = y0 + bar_h - int(7 * K)
+    slot_r = int(6 * K)
+
+    slot_overlay = img.copy()
+    slot_bg = (10, 14, 22) if not _INPUT_STATE["active"] else (14, 18, 30)
+    draw_rounded_rect(slot_overlay, slot_x1, slot_y1, slot_x2, slot_y2, slot_bg, slot_r, -1)
+    cv2.addWeighted(slot_overlay, 0.85, img, 0.15, 0, img)
+
+    slot_border = col(C_BRIGHT, 0.80) if _INPUT_STATE["active"] else col(C_MID, 0.40)
+    draw_rounded_rect(img, slot_x1, slot_y1, slot_x2, slot_y2, slot_border, slot_r, 1)
 
     # 7. Holographic Prompt Terminal Glyph
-    prefix = "⚡ > "
-    fs = 0.48 * K
+    prefix = ">> "
+    fs = 0.46 * K
     line_h = int(22 * K)
-    first_line_y = y0 + int(26 * K) if not is_multiline else y0 + int(22 * K)
-    cv2.putText(img, prefix, (x0 + int(12 * K), first_line_y),
+    first_line_y = slot_y1 + int(24 * K) if not is_multiline else slot_y1 + int(20 * K)
+    cv2.putText(img, prefix, (slot_x1 + int(10 * K), first_line_y),
                 cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_BRIGHT, 1.0), 1, cv2.LINE_AA)
     pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
-    text_x = x0 + int(12 * K) + pw
-    max_text_w = talk_x - text_x - int(12 * K)
+    text_x = slot_x1 + int(10 * K) + pw
+    max_text_w = slot_x2 - text_x - int(10 * K)
 
     # 8. User Input String (with Multiline & wrapping support)
     raw_text = _INPUT_STATE["text"]
     if raw_text:
         lines = raw_text.split("\n")
         display_lines = lines[-2:] if is_multiline else lines[-1:]
-        
+
         for idx, line_str in enumerate(display_lines):
             curr_y = first_line_y + idx * line_h
-            # Truncate left if line exceeds available width
             disp = line_str
             lw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
             while lw > max_text_w and len(disp) > 1:
@@ -1016,81 +1063,93 @@ def draw_holographic_input_bar(img, W, H, K, now):
             cv2.line(img, (text_x, first_line_y - int(14 * K)), (text_x, first_line_y + int(4 * K)),
                      col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
 
-    # Action Buttons: TALK, STOP, CLR, SEND
+    # 9. Tactile Action Buttons with Rounded Corners & Glow
     btn_fs = 0.38 * K
-    text_y_offset = int(21 * K)
+    text_y_offset = int(22 * K)
 
-    # 9. Button 1: [🎙 TALK] (Push to Talk / Activate Voice)
+    # Button 1: [🎙 TALK] (Push to Talk / Activate Voice)
     talk_hover = _INPUT_STATE.get("talk_hover", False)
     is_listening = "LISTEN" in mic_raw or state_raw == "listening"
-    if talk_hover or is_listening:
-        talk_fill = img.copy()
-        cv2.rectangle(talk_fill, (talk_x, btn_y), (talk_x + btn_w, btn_y + btn_h), (35, 75, 45) if is_listening else (30, 60, 70), -1)
-        cv2.addWeighted(talk_fill, 0.75, img, 0.25, 0, img)
-        talk_border = col(C_BRIGHT, 1.0)
-        talk_text_col = col(C_WHITE, 1.0)
+    talk_bg = img.copy()
+    if is_listening:
+        draw_rounded_rect(talk_bg, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, (35, 80, 50), btn_r, -1)
+        cv2.addWeighted(talk_bg, 0.80, img, 0.20, 0, img)
+        draw_rounded_rect(img, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, col(C_BRIGHT, 1.0), btn_r, 2)
+        talk_tcol = col(C_WHITE, 1.0)
+    elif talk_hover:
+        draw_rounded_rect(talk_bg, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, (40, 70, 80), btn_r, -1)
+        cv2.addWeighted(talk_bg, 0.80, img, 0.20, 0, img)
+        draw_rounded_rect(img, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, col(C_BRIGHT, 1.0), btn_r, 1)
+        talk_tcol = col(C_WHITE, 1.0)
     else:
-        talk_border = col(C_MID, 0.65)
-        talk_text_col = col(C_TEXT, 0.85)
-    cv2.rectangle(img, (talk_x, btn_y), (talk_x + btn_w, btn_y + btn_h), talk_border, 1, cv2.LINE_AA)
-    talk_label = "TALK"
-    tl_w, _ = cv2.getTextSize(talk_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, talk_label, (talk_x + (btn_w - tl_w) // 2, btn_y + text_y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, talk_text_col, 1, cv2.LINE_AA)
+        draw_rounded_rect(talk_bg, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, (20, 28, 38), btn_r, -1)
+        cv2.addWeighted(talk_bg, 0.70, img, 0.30, 0, img)
+        draw_rounded_rect(img, talk_x, btn_y, talk_x + btn_w, btn_y + btn_h, col(C_MID, 0.60), btn_r, 1)
+        talk_tcol = col(C_TEXT, 0.85)
 
-    # 10. Button 2: [■ STOP] (Immediate Barge-in / Interrupt)
+    talk_lbl = "TALK"
+    tl_w, _ = cv2.getTextSize(talk_lbl, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, talk_lbl, (talk_x + (btn_w - tl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, talk_tcol, 1, cv2.LINE_AA)
+
+    # Button 2: [■ STOP] (Instant Barge-In / Interrupt)
     stop_hover = _INPUT_STATE.get("stop_hover", False)
     is_active_speaking = state_raw == "speaking" or "SPEAK" in mic_raw
-    if stop_hover or is_active_speaking:
-        stop_fill = img.copy()
-        cv2.rectangle(stop_fill, (stop_x, btn_y), (stop_x + btn_w, btn_y + btn_h), (25, 25, 95), -1)
-        cv2.addWeighted(stop_fill, 0.80, img, 0.20, 0, img)
-        stop_border = (50, 50, 255)
-        stop_text_col = col(C_WHITE, 1.0)
+    stop_bg = img.copy()
+    if is_active_speaking or stop_hover:
+        draw_rounded_rect(stop_bg, stop_x, btn_y, stop_x + btn_w, btn_y + btn_h, (25, 25, 105), btn_r, -1)
+        cv2.addWeighted(stop_bg, 0.85, img, 0.15, 0, img)
+        draw_rounded_rect(img, stop_x, btn_y, stop_x + btn_w, btn_y + btn_h, (50, 50, 255), btn_r, 2 if is_active_speaking else 1)
+        stop_tcol = col(C_WHITE, 1.0)
     else:
-        stop_border = (40, 40, 160)
-        stop_text_col = (80, 80, 200)
-    cv2.rectangle(img, (stop_x, btn_y), (stop_x + btn_w, btn_y + btn_h), stop_border, 1, cv2.LINE_AA)
-    stop_label = "STOP"
-    stl_w, _ = cv2.getTextSize(stop_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, stop_label, (stop_x + (btn_w - stl_w) // 2, btn_y + text_y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, stop_text_col, 1, cv2.LINE_AA)
+        draw_rounded_rect(stop_bg, stop_x, btn_y, stop_x + btn_w, btn_y + btn_h, (25, 20, 30), btn_r, -1)
+        cv2.addWeighted(stop_bg, 0.70, img, 0.30, 0, img)
+        draw_rounded_rect(img, stop_x, btn_y, stop_x + btn_w, btn_y + btn_h, (50, 40, 90), btn_r, 1)
+        stop_tcol = (90, 80, 160)
 
-    # 11. Button 3: [✕ CLR] (Clear Input)
+    stop_lbl = "STOP"
+    stl_w, _ = cv2.getTextSize(stop_lbl, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, stop_lbl, (stop_x + (btn_w - stl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, stop_tcol, 1, cv2.LINE_AA)
+
+    # Button 3: [✕ CLR] (Clear Input Text)
     clr_hover = _INPUT_STATE.get("clear_hover", False)
+    clr_w = int(58 * K)
+    clr_bg = img.copy()
     if clr_hover:
-        clr_fill = img.copy()
-        cv2.rectangle(clr_fill, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), (40, 45, 95), -1)
-        cv2.addWeighted(clr_fill, 0.70, img, 0.30, 0, img)
-        clr_border = col((100, 140, 255), 1.0)
-        clr_text_col = col(C_WHITE, 1.0)
+        draw_rounded_rect(clr_bg, clr_x, btn_y, clr_x + clr_w, btn_y + btn_h, (45, 45, 85), btn_r, -1)
+        cv2.addWeighted(clr_bg, 0.75, img, 0.25, 0, img)
+        draw_rounded_rect(img, clr_x, btn_y, clr_x + clr_w, btn_y + btn_h, col((120, 150, 255), 1.0), btn_r, 1)
+        clr_tcol = col(C_WHITE, 1.0)
     else:
-        clr_border = col(C_MID, 0.55)
-        clr_text_col = col(C_TEXT, 0.75)
-    cv2.rectangle(img, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), clr_border, 1, cv2.LINE_AA)
-    clr_label = "CLR"
-    cl_w, _ = cv2.getTextSize(clr_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, clr_label, (clr_x + (btn_w - cl_w) // 2, btn_y + text_y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, clr_text_col, 1, cv2.LINE_AA)
+        draw_rounded_rect(clr_bg, clr_x, btn_y, clr_x + clr_w, btn_y + btn_h, (20, 24, 34), btn_r, -1)
+        cv2.addWeighted(clr_bg, 0.70, img, 0.30, 0, img)
+        draw_rounded_rect(img, clr_x, btn_y, clr_x + clr_w, btn_y + btn_h, col(C_MID, 0.50), btn_r, 1)
+        clr_tcol = col(C_TEXT, 0.75)
 
-    # 12. Button 4: [► SEND] (Execute Command)
+    clr_lbl = "CLR"
+    cl_w, _ = cv2.getTextSize(clr_lbl, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, clr_lbl, (clr_x + (clr_w - cl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, clr_tcol, 1, cv2.LINE_AA)
+
+    # Button 4: [► SEND] (Execute Command)
     send_hover = _INPUT_STATE.get("send_hover", False)
+    send_bg = img.copy()
     if send_hover:
-        send_fill = img.copy()
-        cv2.rectangle(send_fill, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), (95, 75, 20), -1)
-        cv2.addWeighted(send_fill, 0.75, img, 0.25, 0, img)
-        send_border = col(C_BRIGHT, 1.0)
-        send_text_col = col(C_WHITE, 1.0)
+        draw_rounded_rect(send_bg, send_x, btn_y, send_x + btn_w, btn_y + btn_h, (110, 85, 25), btn_r, -1)
+        cv2.addWeighted(send_bg, 0.85, img, 0.15, 0, img)
+        draw_rounded_rect(img, send_x, btn_y, send_x + btn_w, btn_y + btn_h, col(C_BRIGHT, 1.0), btn_r, 2)
+        send_tcol = col(C_WHITE, 1.0)
     else:
-        send_border = col(C_BRIGHT, 0.85) if _INPUT_STATE["active"] else col(C_MID, 0.65)
-        send_text_col = col(C_BRIGHT, 0.95)
-    cv2.rectangle(img, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), send_border, 1, cv2.LINE_AA)
-    if send_hover:
-        cv2.rectangle(img, (send_x + 2, btn_y + 2), (send_x + btn_w - 2, btn_y + btn_h - 2), col(C_WHITE, 0.6), 1, cv2.LINE_AA)
-    send_label = "SEND"
-    sl_w, _ = cv2.getTextSize(send_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, send_label, (send_x + (btn_w - sl_w) // 2, btn_y + text_y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, send_text_col, 1, cv2.LINE_AA)
+        draw_rounded_rect(send_bg, send_x, btn_y, send_x + btn_w, btn_y + btn_h, (65, 50, 18) if _INPUT_STATE["active"] else (22, 28, 38), btn_r, -1)
+        cv2.addWeighted(send_bg, 0.75, img, 0.25, 0, img)
+        draw_rounded_rect(img, send_x, btn_y, send_x + btn_w, btn_y + btn_h, col(C_BRIGHT, 0.85 if _INPUT_STATE["active"] else 0.60), btn_r, 1)
+        send_tcol = col(C_BRIGHT, 1.0 if _INPUT_STATE["active"] else 0.85)
+
+    send_lbl = "SEND"
+    sl_w, _ = cv2.getTextSize(send_lbl, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, send_lbl, (send_x + (btn_w - sl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, send_tcol, 1, cv2.LINE_AA)
 
 
 def on_mouse(ev, x, y, flags, _):

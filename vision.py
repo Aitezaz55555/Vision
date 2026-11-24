@@ -1907,32 +1907,35 @@ def start_vision():
 
     while True:
         try:
-            set_vision_state("monitoring")
-            if clap_detector:
-                clap_detector.resume()
-
-            # Wait for double-clap or keyboard activation
-            while True:
-                if activation_trigger_event.wait(timeout=0.3):
-                    activation_trigger_event.clear()
-                    break
-
-            # Transition from Standby to Active Listening
-            if clap_detector:
-                clap_detector.pause()
-
-            set_vision_state("activating")
-            time.sleep(0.2)
-            open_interface()
-
             if first_boot:
-                speak(f"{time_greeting()} Sir. Vision online. All systems running at optimal performance. What is the plan?")
                 first_boot = False
+                set_vision_state("activating")
+                time.sleep(0.15)
+                open_interface()
+                speak(f"{time_greeting()} Sir. Vision online. All systems running at optimal performance. What is the plan?")
+                enter_active_mode()
+                run_active_listening_loop()
             else:
-                speak("Yes Sir. I am listening.")
+                set_vision_state("monitoring")
+                if clap_detector:
+                    clap_detector.resume()
 
-            enter_active_mode()
-            run_active_listening_loop()
+                # Wait for double-clap, wake word, or HUD/keyboard activation
+                while True:
+                    if activation_trigger_event.wait(timeout=0.3):
+                        activation_trigger_event.clear()
+                        break
+
+                # Transition from Standby to Active Listening
+                if clap_detector:
+                    clap_detector.pause()
+
+                set_vision_state("activating")
+                time.sleep(0.15)
+                open_interface()
+                speak("Yes Sir. I am listening.")
+                enter_active_mode()
+                run_active_listening_loop()
 
         except SystemExit:
             break

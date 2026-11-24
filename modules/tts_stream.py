@@ -140,8 +140,8 @@ def split_stream_into_sentences(token_generator: Generator[str, None, None],
 
 def synthesize_offline_windows(text: str, output_path: str) -> bool:
     """
-    Synthesizes speech using native Windows SpeechSynthesizer into a WAV file.
-    Guaranteed to work 100% offline on any Windows 10/11 system.
+    Synthesizes speech using native Windows 10/11 OneCore natural speech synthesis into a WAV file.
+    Guaranteed to work 100% offline on any Windows 10 or Windows 11 system with zero internet connection.
     """
     if not sys.platform.startswith("win"):
         return False
@@ -149,17 +149,51 @@ def synthesize_offline_windows(text: str, output_path: str) -> bool:
         abs_path = os.path.abspath(output_path).replace("'", "''")
         escaped_text = text.replace("'", "''").replace('"', '`"').replace("\n", " ").strip()
         ps_code = f"""
-Add-Type -AssemblyName System.Speech
-$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$synth.SetOutputToWaveFile('{abs_path}')
-$synth.Speak('{escaped_text}')
-$synth.Dispose()
+$stream = $null
+try {{
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $asTaskGeneric = [System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{ $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' }}[0]
+    function Await($WinRtTask, $ResultType) {{
+        $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+        $netTask = $asTask.Invoke($null, @($WinRtTask))
+        $netTask.Wait(-1) | Out-Null
+        $netTask.Result
+    }}
+
+    [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media, ContentType = WindowsRuntime] | Out-Null
+    $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+    $op = $synth.SynthesizeTextToStreamAsync('{escaped_text}')
+    $stream = Await $op ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
+
+    $outPath = [System.IO.Path]::GetFullPath('{abs_path}')
+    $netStream = [System.IO.WindowsRuntimeStreamExtensions]::AsStreamForRead($stream)
+    $fileStream = [System.IO.File]::Create($outPath)
+    $netStream.CopyTo($fileStream)
+    $fileStream.Close()
+    $netStream.Close()
+    exit 0
+}} catch {{
+    # Fallback to SAPI5 System.Speech if WinRT is unavailable
+    try {{
+        Add-Type -AssemblyName System.Speech
+        $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        $s.SetOutputToWaveFile('{abs_path}')
+        $s.Speak('{escaped_text}')
+        $s.Dispose()
+        exit 0
+    }} catch {{
+        exit 1
+    }}
+}}
 """
         cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_code]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=12, creationflags=flags)
         if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
             return True
+        else:
+            if res.stderr:
+                print(f"[OfflineTTS] PowerShell stderr: {res.stderr.strip()[:160]}")
     except Exception as e:
         print("[OfflineTTS] Error:", e)
     return False
@@ -334,8 +368,8 @@ class StreamingTTSManager:
             import msvcrt
             import ctypes
             user32 = ctypes.windll.user32 if sys.platform.startswith("win") else None
-            # VK_ESCAPE (0x1B), VK_SPACE (0x20), 'S' (0x53), 'Q' (0x51)
-            VK_STOP_KEYS = (0x1B, 0x20, 0x53, 0x51)
+            # Strict global stop key: VK_ESCAPE (0x1B). NEVER Space (0x20) or S (0x53) to prevent false interrupts!
+            VK_STOP_KEYS = (0x1B,)
 
             while self.is_playing.is_set() and not self.cancel_event.is_set():
                 # Check for UI trigger file (written when user clicks [■ STOP] button in HUD)
@@ -356,8 +390,8 @@ class StreamingTTSManager:
 
                 if msvcrt and msvcrt.kbhit():
                     ch = msvcrt.getch()
-                    if ch in (b'\x1b', b' ', b's', b'S', b'\r', b'q', b'Q'):
-                        self.interrupt(reason="console key press")
+                    if ch == b'\x1b':
+                        self.interrupt(reason="console escape key")
                         return
 
                 time.sleep(0.02)
