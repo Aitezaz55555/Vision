@@ -138,6 +138,33 @@ def split_stream_into_sentences(token_generator: Generator[str, None, None],
         yield remaining
 
 
+def synthesize_offline_windows(text: str, output_path: str) -> bool:
+    """
+    Synthesizes speech using native Windows SpeechSynthesizer into a WAV file.
+    Guaranteed to work 100% offline on any Windows 10/11 system.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        abs_path = os.path.abspath(output_path).replace("'", "''")
+        escaped_text = text.replace("'", "''").replace('"', '`"').replace("\n", " ").strip()
+        ps_code = f"""
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.SetOutputToWaveFile('{abs_path}')
+$synth.Speak('{escaped_text}')
+$synth.Dispose()
+"""
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_code]
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=12, creationflags=flags)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+            return True
+    except Exception as e:
+        print("[OfflineTTS] Error:", e)
+    return False
+
+
 class StreamingTTSManager:
     """
     Manages low-latency sentence-level speech synthesis, asynchronous playback,
@@ -242,6 +269,7 @@ class StreamingTTSManager:
     def _synthesize_sentence(self, text: str) -> Optional[str]:
         """
         Synthesizes a sentence into a temporary audio file.
+        Uses high-fidelity Microsoft Edge-TTS primary with instant native Windows SpeechSynthesizer offline fallback.
         Returns file path or None if synthesis fails or was cancelled.
         """
         if self.cancel_event.is_set():
@@ -252,14 +280,20 @@ class StreamingTTSManager:
 
         if HAS_EDGE:
             try:
-                asyncio.run(self._synthesize_edge_async(text, out_path))
+                # Fast timeout (3.5s) to guarantee snappy responses
+                asyncio.run(asyncio.wait_for(self._synthesize_edge_async(text, out_path), timeout=3.5))
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
                     success = True
-            except Exception as e:
+            except Exception:
                 pass
 
         if not success:
             self._cleanup_temp_file(out_path)
+            # Guaranteed local offline fallback using native Windows speech synthesis
+            wav_path = self._create_temp_audio_file(".wav")
+            if synthesize_offline_windows(text, wav_path):
+                return wav_path
+            self._cleanup_temp_file(wav_path)
             return None
 
         return out_path
@@ -294,24 +328,33 @@ class StreamingTTSManager:
         self._cleanup_all_temp_files()
 
     def _keyboard_monitor(self):
-        """Global non-blocking keyboard listener thread for ESC, SPACE, 'S', 'Q', ENTER."""
-        if not sys.platform.startswith("win"):
-            return
+        """Global non-blocking keyboard & UI stop trigger listener thread."""
+        interrupt_file = os.path.join(tempfile.gettempdir(), "vision_interrupt.flag")
         try:
             import msvcrt
             import ctypes
-            user32 = ctypes.windll.user32
+            user32 = ctypes.windll.user32 if sys.platform.startswith("win") else None
             # VK_ESCAPE (0x1B), VK_SPACE (0x20), 'S' (0x53), 'Q' (0x51)
             VK_STOP_KEYS = (0x1B, 0x20, 0x53, 0x51)
 
             while self.is_playing.is_set() and not self.cancel_event.is_set():
-                # Global Windows keyboard state (works across all windows/apps)
-                for vk in VK_STOP_KEYS:
-                    if user32.GetAsyncKeyState(vk) & 0x8000:
-                        self.interrupt(reason=f"global key press (0x{vk:02X})")
-                        return
+                # Check for UI trigger file (written when user clicks [■ STOP] button in HUD)
+                if os.path.exists(interrupt_file):
+                    try:
+                        os.remove(interrupt_file)
+                    except Exception:
+                        pass
+                    self.interrupt(reason="UI stop button")
+                    return
 
-                if msvcrt.kbhit():
+                # Global Windows keyboard state (works across all windows/apps)
+                if user32:
+                    for vk in VK_STOP_KEYS:
+                        if user32.GetAsyncKeyState(vk) & 0x8000:
+                            self.interrupt(reason=f"global key press (0x{vk:02X})")
+                            return
+
+                if msvcrt and msvcrt.kbhit():
                     ch = msvcrt.getch()
                     if ch in (b'\x1b', b' ', b's', b'S', b'\r', b'q', b'Q'):
                         self.interrupt(reason="console key press")
@@ -327,51 +370,48 @@ class StreamingTTSManager:
             return
         try:
             recognizer = self.recognizer_factory()
-            recognizer.pause_threshold = 0.3
+            recognizer.pause_threshold = 0.25
             recognizer.phrase_threshold = 0.15
-            recognizer.non_speaking_duration = 0.2
+            recognizer.non_speaking_duration = 0.15
             recognizer.dynamic_energy_threshold = False
 
-            # Duck pygame mixer volume slightly so mic can hear user voice over speakers
-            if HAS_PYGAME and pygame.mixer.get_init():
-                try:
-                    pygame.mixer.music.set_volume(0.8)
-                except Exception:
-                    pass
+            try:
+                mic_src = self.microphone_factory()
+            except Exception:
+                return
 
-            with self.microphone_factory() as source:
-                # Fast calibration of ambient noise
-                try:
-                    recognizer.adjust_for_ambient_noise(source, duration=0.25)
-                    recognizer.energy_threshold = max(40, min(160, recognizer.energy_threshold * 1.25))
-                except Exception:
-                    recognizer.energy_threshold = 55
-
-                while self.is_playing.is_set() and not self.cancel_event.is_set():
+            try:
+                with mic_src as source:
                     try:
-                        audio = recognizer.listen(source, timeout=0.6, phrase_time_limit=1.5)
-                        if self.cancel_event.is_set():
-                            return
+                        recognizer.energy_threshold = 140
+                    except Exception:
+                        pass
 
-                        # Dual-pass recognition for barge-in: primary en-IN, fallback en-US
-                        heard = ""
+                    while self.is_playing.is_set() and not self.cancel_event.is_set():
                         try:
-                            heard = recognizer.recognize_google(audio, language="en-IN").strip().lower()
-                        except Exception:
+                            audio = recognizer.listen(source, timeout=0.5, phrase_time_limit=1.2)
+                            if self.cancel_event.is_set():
+                                return
+
+                            heard = ""
                             try:
-                                heard = recognizer.recognize_google(audio, language="en-US").strip().lower()
+                                heard = recognizer.recognize_google(audio, language="en-IN").strip().lower()
                             except Exception:
                                 heard = ""
 
-                        if heard:
-                            print(f"\n[Barge-In Monitor] Heard during speech: '{heard}'")
-                            if any(k in heard for k in BARGE_IN_KEYWORDS):
-                                self.interrupt(reason=f"voice keyword '{heard}'")
-                                return
-                    except sr.WaitTimeoutError:
-                        continue
-                    except Exception:
-                        continue
+                            if heard:
+                                # Strict barge-in words to prevent laptop speaker false triggers
+                                STRICT_STOP = {"stop", "cancel", "shut up", "be quiet", "enough", "ruk jao", "chup", "halt"}
+                                if any(k in heard for k in STRICT_STOP):
+                                    print(f"\n[Barge-In Monitor] Stop keyword heard: '{heard}'")
+                                    self.interrupt(reason=f"voice keyword '{heard}'")
+                                    return
+                        except sr.WaitTimeoutError:
+                            continue
+                        except Exception:
+                            break
+            except Exception:
+                pass
         except Exception as e:
             print(f"[StreamingTTS] Voice monitor note: {e}")
 

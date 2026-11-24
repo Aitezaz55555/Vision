@@ -223,12 +223,39 @@ def pick_voice():
 VOICE = pick_voice()
 
 
-def set_vision_state(state: str, text: str = "", result: str = ""):
+def set_vision_state(state: str, text: str = "", result: str = "", mic_state: str = "", error: str = ""):
     """Updates atomic visual state JSON and text files for the interface."""
+    resolved_mic = mic_state
+    if not resolved_mic:
+        if state == "speaking":
+            resolved_mic = "SPEAKING"
+        elif state == "listening":
+            resolved_mic = "LISTENING"
+        elif state == "speech_detected":
+            resolved_mic = "SPEECH DETECTED"
+        elif state == "transcribing":
+            resolved_mic = "TRANSCRIBING"
+        elif state in ("processing", "thinking"):
+            resolved_mic = "TEMPORARILY PAUSED"
+        elif state == "interrupted":
+            resolved_mic = "INTERRUPTED"
+        elif state == "activating":
+            resolved_mic = "INITIALISING"
+        elif state == "error":
+            resolved_mic = "ERROR"
+        elif state == "returning_to_listening":
+            resolved_mic = "RETURNING_TO_LISTENING"
+        elif conversation_mode:
+            resolved_mic = "MICROPHONE ACTIVE"
+        else:
+            resolved_mic = "MICROPHONE OFF"
+
     state_obj = {
         "state": state,
+        "mic_state": resolved_mic,
         "text": text,
         "result": result,
+        "error": error,
         "timestamp": time.time(),
     }
     # Write JSON
@@ -316,6 +343,7 @@ def safe_listen(timeout=6, phrase_time=10, mode="command", active_source=None):
     3. Windows SAPI speech fallback.
     """
     try:
+        set_vision_state("listening", mic_state="LISTENING")
         if active_source is not None:
             audio = recognizer.listen(active_source, timeout=max(1, int(timeout)),
                                       phrase_time_limit=max(1, int(phrase_time)))
@@ -325,25 +353,32 @@ def safe_listen(timeout=6, phrase_time=10, mode="command", active_source=None):
                     audio = recognizer.listen(source, timeout=max(1, int(timeout)),
                                               phrase_time_limit=max(1, int(phrase_time)))
 
-        set_vision_state("processing")
+        set_vision_state("speech_detected", mic_state="SPEECH DETECTED")
+        time.sleep(0.04)
+        set_vision_state("transcribing", mic_state="TRANSCRIBING")
         text, engine = transcribe_audio(recognizer, audio, prefer_local=True)
 
         if text:
             global audio_failure_count
             audio_failure_count = 0
             print(f"Heard ({mode} via {engine}): {text}")
+            set_vision_state("processing", text=text, mic_state="TEMPORARILY PAUSED")
             return text
         else:
             note_audio_failure("speech was not understood")
+            set_vision_state("listening", mic_state="LISTENING")
             return ""
     except sr.WaitTimeoutError:
         return ""
     except sr.RequestError as e:
         note_audio_failure(f"recognition service error: {e}")
+        set_vision_state("listening", mic_state="LISTENING", error=str(e))
     except OSError as e:
         note_audio_failure(f"microphone error: {e}")
+        set_vision_state("listening", mic_state="LISTENING", error=str(e))
     except Exception as e:
         note_audio_failure(f"unexpected listen error: {e}")
+        set_vision_state("listening", mic_state="LISTENING", error=str(e))
     return ""
 
 
@@ -567,7 +602,7 @@ def start_ollama_service():
 
         if sys.platform.startswith("win"):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.Popen([exe, "serve"], env=env, creationflags=flags)
+            subprocess.Popen([exe, "serve"], env=env, creationflags=flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             subprocess.Popen([exe, "serve"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -942,63 +977,68 @@ dictation_active = False
 def enter_active_mode():
     global conversation_mode
     conversation_mode = True
-    set_vision_state("listening")
+    set_vision_state("listening", mic_state="MICROPHONE ACTIVE")
 
 
 def exit_active_mode():
     global conversation_mode, dictation_active
     conversation_mode = False
     dictation_active = False
-    set_vision_state("monitoring")
-    print("\n[Standby] Vision is in background standby. Clap twice to activate!")
+    set_vision_state("monitoring", mic_state="MICROPHONE OFF")
+    print("\n[Standby] Vision is in background standby. Say 'Vision' or clap twice to activate!")
 
 
 def run_active_listening_loop():
-    global dictation_active
+    global dictation_active, conversation_mode
     print("[Active mode] Continuous listening ON...")
     silence_count = 0
-    max_silence = 5  # after 5 consecutive empty listens (~25s), return to standby
+    max_silence = 12  # ~60s of complete idle silence before returning to standby
 
-    try:
-        with audio_lock:
-            with get_microphone() as persistent_source:
-                recognizer.adjust_for_ambient_noise(persistent_source, duration=0.6)
-                while conversation_mode:
-                    if dictation_active:
-                        set_vision_state("dictation")
-                        phrase = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="dictation", active_source=persistent_source)
-                        if phrase:
-                            silence_count = 0
-                            if re.search(r"\b(?:stop dictation|exit dictation|end dictation)\b", phrase, re.I):
-                                dictation_active = False
-                                speak("Dictation stopped Sir.")
-                                set_vision_state("listening")
-                            else:
-                                print(f"[Dictation] {phrase}")
-                                set_vision_state("dictation", text=phrase)
-                                dictation_path = os.path.join(DATA_DIR, "dictation.txt")
-                                os.makedirs(DATA_DIR, exist_ok=True)
-                                with open(dictation_path, "a", encoding="utf-8") as f:
-                                    f.write(phrase + "\n")
+    set_vision_state("listening", mic_state="LISTENING")
+
+    while conversation_mode:
+        try:
+            if dictation_active:
+                set_vision_state("dictation", mic_state="LISTENING")
+                phrase = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="dictation")
+                if phrase:
+                    silence_count = 0
+                    if re.search(r"\b(?:stop dictation|exit dictation|end dictation)\b", phrase, re.I):
+                        dictation_active = False
+                        speak("Dictation stopped Sir.")
+                        set_vision_state("listening", mic_state="LISTENING")
                     else:
-                        set_vision_state("listening")
-                        command = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="command", active_source=persistent_source)
-                        if command:
-                            silence_count = 0
-                            set_vision_state("processing", text=command)
-                            process_command(command)
-                            if not conversation_mode:
-                                break
-                        else:
-                            silence_count += 1
-                            if silence_count >= max_silence:
-                                print("[Active mode] Inactivity timeout. Returning to background standby.")
-                                exit_active_mode()
-                                break
-                            time.sleep(0.04)
-    except Exception as e:
-        print(f"[Active mode] Stream exception: {e}")
-        exit_active_mode()
+                        print(f"[Dictation] {phrase}")
+                        set_vision_state("dictation", text=phrase, mic_state="TRANSCRIBING")
+                        dictation_path = os.path.join(DATA_DIR, "dictation.txt")
+                        os.makedirs(DATA_DIR, exist_ok=True)
+                        with open(dictation_path, "a", encoding="utf-8") as f:
+                            f.write(phrase + "\n")
+                        set_vision_state("dictation", mic_state="LISTENING")
+            else:
+                set_vision_state("listening", mic_state="LISTENING")
+                command = safe_listen(COMMAND_LISTEN_TIMEOUT, COMMAND_PHRASE_TIME, mode="command")
+                if command:
+                    silence_count = 0
+                    set_vision_state("processing", text=command, mic_state="TEMPORARILY PAUSED")
+                    process_command(command)
+                    if not conversation_mode:
+                        break
+                    # Automatically and seamlessly return to listening for next command!
+                    set_vision_state("returning_to_listening", mic_state="RETURNING_TO_LISTENING")
+                    time.sleep(0.12)
+                    set_vision_state("listening", mic_state="LISTENING")
+                else:
+                    silence_count += 1
+                    if silence_count >= max_silence:
+                        print("[Active mode] Inactivity timeout. Returning to background standby.")
+                        exit_active_mode()
+                        break
+                    time.sleep(0.04)
+        except Exception as e:
+            print(f"[Active mode] Listening loop recovery note: {e}")
+            set_vision_state("listening", mic_state="LISTENING", error=str(e))
+            time.sleep(0.2)
 
 
 # ==================== COMMAND UNDERSTANDING ==================== #
@@ -1743,9 +1783,26 @@ def user_query_poller():
                 qtext = data.get("text", "").strip()
                 if qid and qid != _last_user_query_id and qtext:
                     _last_user_query_id = qid
-                    print(f"\n[HUD Text Input] Received: '{qtext}'")
-                    # Wake up and process through the unified pipeline
-                    threading.Thread(target=process_command, args=(qtext, "text"), daemon=True).start()
+                    if qtext == "__ACTIVATE_VOICE__":
+                        print("[HUD Button] Talk clicked -> Activating voice mode")
+                        threading.Thread(target=on_double_clap_detected, daemon=True).start()
+                    elif qtext == "__STOP__":
+                        print("[HUD Button] Stop clicked -> Triggering immediate barge-in stop")
+                        try:
+                            tts_manager.trigger_barge_in()
+                        except Exception:
+                            pass
+                        set_vision_state("interrupted", mic_state="INTERRUPTED")
+                        try:
+                            flag_p = os.path.join(tempfile.gettempdir(), "vision_interrupt.flag")
+                            with open(flag_p, "w", encoding="utf-8") as ff:
+                                ff.write("1")
+                        except Exception:
+                            pass
+                    else:
+                        print(f"\n[HUD Text Input] Received: '{qtext}'")
+                        # Wake up and process through the unified pipeline
+                        threading.Thread(target=process_command, args=(qtext, "text"), daemon=True).start()
         except Exception:
             pass
         time.sleep(0.08)

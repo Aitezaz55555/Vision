@@ -12,11 +12,15 @@ import urllib.request
 if sys.platform == "win32":
     try:
         import ctypes
+        from ctypes import wintypes
         # Suppress OS-level Bad Image and Critical Error modal dialogs so Python handles them cleanly
         flags = 0x0001 | 0x0002 | 0x8000
         ctypes.windll.kernel32.SetErrorMode(flags)
         try:
-            ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+            ctypes.windll.kernel32.SetThreadErrorMode.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+            ctypes.windll.kernel32.SetThreadErrorMode.restype = wintypes.BOOL
+            old_m = wintypes.DWORD()
+            ctypes.windll.kernel32.SetThreadErrorMode(flags, ctypes.byref(old_m))
         except Exception:
             pass
     except Exception:
@@ -753,12 +757,32 @@ _INPUT_STATE = {
     "last_blink": 0.0,
     "send_hover": False,
     "clear_hover": False,
+    "stop_hover": False,
+    "talk_hover": False,
     "bar_rect": None,       # (x, y, w, h)
     "send_rect": None,      # (x, y, w, h)
     "clear_rect": None,     # (x, y, w, h)
+    "stop_rect": None,      # (x, y, w, h)
+    "talk_rect": None,      # (x, y, w, h)
     "chat_history": [],     # list of (role, text, time)
     "last_recorded_reply": ""
 }
+
+
+def dispatch_hud_action(action_code: str):
+    """Publish a HUD action command (e.g. __ACTIVATE_VOICE__, __STOP__) to the unified pipeline."""
+    payload = {
+        "query_id": f"{time.time()}_{os.getpid()}_{action_code}",
+        "text": action_code,
+        "input_method": "button",
+        "timestamp": time.time()
+    }
+    try:
+        os.makedirs(os.path.join(SCRIPT_DIR, "data"), exist_ok=True)
+        with open(DATA_USER_QUERY, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print("[Interface] Action dispatch error:", e)
 
 
 def submit_text_input(query_text: str):
@@ -826,48 +850,55 @@ def draw_chat_history_overlay(img, W, H, K):
 
 
 def draw_holographic_input_bar(img, W, H, K, now):
-    """Render high-tech cyberpunk glowing holographic search/command bar with neon styling and HUD telemetry."""
-    bar_w = int(min(W * 0.76, 920 * K))
-    bar_h = int(42 * K)
+    """Render high-tech cyberpunk elevated glass command console with live mic status, multiline text, and action buttons."""
+    # Check if multiline input to adjust console height dynamically
+    is_multiline = "\n" in _INPUT_STATE["text"]
+    bar_w = int(min(W * 0.88, 1040 * K))
+    bar_h = int(68 * K) if is_multiline else int(48 * K)
     x0 = (W - bar_w) // 2
-    y0 = H - int(56 * K)
+    y0 = H - bar_h - int(12 * K)
 
     _INPUT_STATE["bar_rect"] = (x0, y0, bar_w, bar_h)
 
-    # Action Button dimensions
-    btn_w = int(68 * K)
-    btn_h = bar_h - int(10 * K)
-    btn_y = y0 + int(5 * K)
+    # Action Button dimensions (4 buttons: TALK, STOP, CLR, SEND)
+    btn_w = int(66 * K)
+    btn_h = int(32 * K)
+    btn_y = y0 + (bar_h - btn_h) // 2
     send_x = x0 + bar_w - btn_w - int(8 * K)
-    clr_x = send_x - btn_w - int(8 * K)
+    clr_x = send_x - btn_w - int(6 * K)
+    stop_x = clr_x - btn_w - int(6 * K)
+    talk_x = stop_x - btn_w - int(6 * K)
+
     _INPUT_STATE["send_rect"] = (send_x, btn_y, btn_w, btn_h)
     _INPUT_STATE["clear_rect"] = (clr_x, btn_y, btn_w, btn_h)
+    _INPUT_STATE["stop_rect"] = (stop_x, btn_y, btn_w, btn_h)
+    _INPUT_STATE["talk_rect"] = (talk_x, btn_y, btn_w, btn_h)
 
     # 1. Subtle Outer Glow Halo (breathing neon bloom)
     pulse = 0.55 + 0.45 * math.sin(now * 3.2)
-    glow_expand = int(4 * K)
-    glow_col = col(C_BRIGHT, 0.22 * pulse) if _INPUT_STATE["active"] else col(C_MID, 0.12 * pulse)
+    glow_expand = int(5 * K)
+    glow_col = col(C_BRIGHT, 0.22 * pulse) if _INPUT_STATE["active"] else col(C_MID, 0.10 * pulse)
     overlay = img.copy()
     cv2.rectangle(overlay, (x0 - glow_expand, y0 - glow_expand),
                   (x0 + bar_w + glow_expand, y0 + bar_h + glow_expand), glow_col, -1)
 
-    # 2. Glassmorphic Translucent Dark Navy Body
+    # 2. Elevated Glassmorphic Deep Obsidian Console Body
     body_col = (14, 20, 32) if _INPUT_STATE["active"] else (8, 12, 22)
     cv2.rectangle(overlay, (x0, y0), (x0 + bar_w, y0 + bar_h), body_col, -1)
 
     # 3. Top Cyber Bevel Highlight (horizontal light rail)
-    top_rail_col = col(C_BRIGHT, 0.45 if _INPUT_STATE["active"] else 0.25)
+    top_rail_col = col(C_BRIGHT, 0.55 if _INPUT_STATE["active"] else 0.30)
     cv2.line(overlay, (x0 + int(12 * K), y0 + 1), (x0 + bar_w - int(12 * K), y0 + 1), top_rail_col, 1)
 
-    cv2.addWeighted(overlay, 0.78, img, 0.22, 0, img)
+    cv2.addWeighted(overlay, 0.80, img, 0.20, 0, img)
 
     # 4. Precision Tech Borders (Dual-rail cyberpunk border)
     border_main = col(C_BRIGHT, 0.95 if _INPUT_STATE["active"] else 0.65)
-    border_inner = col(C_MID, 0.40 if _INPUT_STATE["active"] else 0.25)
+    border_inner = col(C_MID, 0.40 if _INPUT_STATE["active"] else 0.22)
     cv2.rectangle(img, (x0, y0), (x0 + bar_w, y0 + bar_h), border_main, 1, cv2.LINE_AA)
     cv2.rectangle(img, (x0 + 2, y0 + 2), (x0 + bar_w - 2, y0 + bar_h - 2), border_inner, 1, cv2.LINE_AA)
 
-    # 5. Sci-Fi Chamfer Corner Targeting Reticles
+    # 5. Sci-Fi Chamfer Corner Reticles
     c_len = int(12 * K)
     reticle_col = col(C_BRIGHT, 1.0)
     # Top-Left Reticle
@@ -883,78 +914,166 @@ def draw_holographic_input_bar(img, W, H, K, now):
     cv2.line(img, (x0 + bar_w - c_len, y0 + bar_h), (x0 + bar_w + 2, y0 + bar_h), reticle_col, 2)
     cv2.line(img, (x0 + bar_w, y0 + bar_h - c_len), (x0 + bar_w, y0 + bar_h + 2), reticle_col, 2)
 
-    # 6. Upper Telemetry Header Badge
-    badge_fs = 0.34 * K
-    status_tag = "SYS // INPUT_CHANNEL: ACTIVE" if _INPUT_STATE["active"] else "SYS // INPUT_CHANNEL: READY"
-    dot_col = col(C_BRIGHT, 1.0) if _INPUT_STATE["active"] else col(C_MID, 0.75)
-    cv2.circle(img, (x0 + int(8 * K), y0 - int(6 * K)), int(3 * K), dot_col, -1, cv2.LINE_AA)
-    cv2.putText(img, status_tag, (x0 + int(16 * K), y0 - int(4 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_TEXT, 0.85), 1, cv2.LINE_AA)
+    # 6. Upper Telemetry Header: Real-Time Microphone Status Indicator Pill
+    st_info = get_vision_state_info()
+    mic_raw = str(st_info.get("mic_state", "")).upper()
+    state_raw = str(st_info.get("state", "")).lower()
 
-    link_tag = "[ PROTOCOL // DIRECT_LINK ]"
+    if state_raw == "speaking" or "SPEAK" in mic_raw:
+        pill_dot = (40, 40, 245)
+        pill_text = "● SPEAKING"
+        pill_border = (60, 60, 255)
+    elif "SPEECH DETECTED" in mic_raw or state_raw == "speech_detected":
+        pill_dot = (0, 255, 200)
+        pill_text = "● SPEECH DETECTED"
+        pill_border = (0, 220, 180)
+    elif "TRANSCRIB" in mic_raw or state_raw == "transcribing":
+        pill_dot = (255, 180, 50)
+        pill_text = "● TRANSCRIBING"
+        pill_border = (240, 160, 40)
+    elif "PAUSE" in mic_raw or state_raw in ("processing", "thinking"):
+        pill_dot = (0, 215, 255)
+        pill_text = "● MIC: PAUSED"
+        pill_border = (0, 190, 230)
+    elif "LISTEN" in mic_raw or state_raw == "listening":
+        pill_dot = col(C_BRIGHT, 0.70 + 0.30 * pulse)
+        pill_text = "● MIC: LISTENING"
+        pill_border = col(C_BRIGHT, 0.85)
+    elif "INTERRUPT" in mic_raw or state_raw == "interrupted":
+        pill_dot = (0, 140, 255)
+        pill_text = "■ STOPPED"
+        pill_border = (0, 120, 220)
+    else:
+        pill_dot = col(C_MID, 0.65)
+        pill_text = "○ MIC: STANDBY"
+        pill_border = col(C_MID, 0.45)
+
+    pill_fs = 0.34 * K
+    pill_tw, _ = cv2.getTextSize(pill_text, cv2.FONT_HERSHEY_SIMPLEX, pill_fs, 1)[0]
+    pill_w = pill_tw + int(16 * K)
+    pill_h = int(16 * K)
+    pill_x = x0 + int(8 * K)
+    pill_y = y0 - pill_h - int(4 * K)
+
+    # Draw Status Pill
+    cv2.rectangle(img, (pill_x, pill_y), (pill_x + pill_w, pill_y + pill_h), pill_border, 1, cv2.LINE_AA)
+    cv2.putText(img, pill_text, (pill_x + int(8 * K), pill_y + int(12 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, pill_fs, pill_dot, 1, cv2.LINE_AA)
+
+    # Right side of telemetry rail: Shortcut Hints
+    link_tag = "SHIFT+ENTER: NEWLINE  |  ENTER: SEND  |  ESC: BLUR"
+    badge_fs = 0.32 * K
     lt_w, _ = cv2.getTextSize(link_tag, cv2.FONT_HERSHEY_SIMPLEX, badge_fs, 1)[0]
-    cv2.putText(img, link_tag, (x0 + bar_w - lt_w - int(4 * K), y0 - int(4 * K)),
-                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_MID, 0.60), 1, cv2.LINE_AA)
+    cv2.putText(img, link_tag, (x0 + bar_w - lt_w - int(4 * K), y0 - int(5 * K)),
+                cv2.FONT_HERSHEY_SIMPLEX, badge_fs, col(C_MID, 0.65), 1, cv2.LINE_AA)
 
     # 7. Holographic Prompt Terminal Glyph
     prefix = "⚡ > "
-    fs = 0.50 * K
-    cv2.putText(img, prefix, (x0 + int(14 * K), y0 + int(27 * K)),
+    fs = 0.48 * K
+    line_h = int(22 * K)
+    first_line_y = y0 + int(26 * K) if not is_multiline else y0 + int(22 * K)
+    cv2.putText(img, prefix, (x0 + int(12 * K), first_line_y),
                 cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_BRIGHT, 1.0), 1, cv2.LINE_AA)
     pw, _ = cv2.getTextSize(prefix, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
-    text_x = x0 + int(14 * K) + pw
+    text_x = x0 + int(12 * K) + pw
+    max_text_w = talk_x - text_x - int(12 * K)
 
-    # 8. User Input String or Responsive Placeholder
-    if _INPUT_STATE["text"]:
-        disp = _INPUT_STATE["text"]
-        max_px = clr_x - text_x - int(12 * K)
-        tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
-        while tw > max_px and len(disp) > 1:
-            disp = disp[1:]
-            tw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+    # 8. User Input String (with Multiline & wrapping support)
+    raw_text = _INPUT_STATE["text"]
+    if raw_text:
+        lines = raw_text.split("\n")
+        display_lines = lines[-2:] if is_multiline else lines[-1:]
+        
+        for idx, line_str in enumerate(display_lines):
+            curr_y = first_line_y + idx * line_h
+            # Truncate left if line exceeds available width
+            disp = line_str
+            lw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
+            while lw > max_text_w and len(disp) > 1:
+                disp = disp[1:]
+                lw, _ = cv2.getTextSize(disp, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0]
 
-        cv2.putText(img, disp, (text_x, y0 + int(27 * K)),
-                    cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_WHITE, 1.0), 1, cv2.LINE_AA)
+            cv2.putText(img, disp, (text_x, curr_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, col(C_WHITE, 1.0), 1, cv2.LINE_AA)
 
-        # High-tech Blinking Neon Cursor
-        if _INPUT_STATE["active"]:
-            if now - _INPUT_STATE["last_blink"] > 0.42:
-                _INPUT_STATE["cursor_visible"] = not _INPUT_STATE["cursor_visible"]
-                _INPUT_STATE["last_blink"] = now
-            if _INPUT_STATE["cursor_visible"]:
-                cur_x = text_x + tw + 3
-                cv2.line(img, (cur_x, y0 + int(9 * K)), (cur_x, y0 + bar_h - int(9 * K)),
-                         col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
-                cv2.circle(img, (cur_x, y0 + int(8 * K)), 1, col(C_WHITE, 1.0), -1)
+            # High-tech Blinking Neon Cursor on active line
+            if _INPUT_STATE["active"] and idx == len(display_lines) - 1:
+                if now - _INPUT_STATE["last_blink"] > 0.42:
+                    _INPUT_STATE["cursor_visible"] = not _INPUT_STATE["cursor_visible"]
+                    _INPUT_STATE["last_blink"] = now
+                if _INPUT_STATE["cursor_visible"]:
+                    cur_x = text_x + lw + 3
+                    cv2.line(img, (cur_x, curr_y - int(14 * K)), (cur_x, curr_y + int(4 * K)),
+                             col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
+                    cv2.circle(img, (cur_x, curr_y - int(14 * K)), 1, col(C_WHITE, 1.0), -1)
     else:
-        placeholder = "Type message or command... (Click or press '/' to type, Enter to execute)"
+        placeholder = "Type message or command... (Click or press '/' to type)"
         if _INPUT_STATE["active"]:
-            placeholder = "Enter instruction... (Press Enter to execute, Esc to blur)"
-        cv2.putText(img, placeholder, (text_x, y0 + int(27 * K)),
+            placeholder = "Enter instruction... (Enter to send, Shift+Enter for new line)"
+        cv2.putText(img, placeholder, (text_x, first_line_y),
                     cv2.FONT_HERSHEY_SIMPLEX, fs * 0.88, col(C_MID, 0.70), 1, cv2.LINE_AA)
         if _INPUT_STATE["active"]:
-            cv2.line(img, (text_x, y0 + int(9 * K)), (text_x, y0 + bar_h - int(9 * K)),
+            cv2.line(img, (text_x, first_line_y - int(14 * K)), (text_x, first_line_y + int(4 * K)),
                      col(C_BRIGHT, 1.0), 2, cv2.LINE_AA)
 
-    # 9. Polished [CLR] Button
-    btn_fs = 0.40 * K
+    # Action Buttons: TALK, STOP, CLR, SEND
+    btn_fs = 0.38 * K
+    text_y_offset = int(21 * K)
+
+    # 9. Button 1: [🎙 TALK] (Push to Talk / Activate Voice)
+    talk_hover = _INPUT_STATE.get("talk_hover", False)
+    is_listening = "LISTEN" in mic_raw or state_raw == "listening"
+    if talk_hover or is_listening:
+        talk_fill = img.copy()
+        cv2.rectangle(talk_fill, (talk_x, btn_y), (talk_x + btn_w, btn_y + btn_h), (35, 75, 45) if is_listening else (30, 60, 70), -1)
+        cv2.addWeighted(talk_fill, 0.75, img, 0.25, 0, img)
+        talk_border = col(C_BRIGHT, 1.0)
+        talk_text_col = col(C_WHITE, 1.0)
+    else:
+        talk_border = col(C_MID, 0.65)
+        talk_text_col = col(C_TEXT, 0.85)
+    cv2.rectangle(img, (talk_x, btn_y), (talk_x + btn_w, btn_y + btn_h), talk_border, 1, cv2.LINE_AA)
+    talk_label = "TALK"
+    tl_w, _ = cv2.getTextSize(talk_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, talk_label, (talk_x + (btn_w - tl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, talk_text_col, 1, cv2.LINE_AA)
+
+    # 10. Button 2: [■ STOP] (Immediate Barge-in / Interrupt)
+    stop_hover = _INPUT_STATE.get("stop_hover", False)
+    is_active_speaking = state_raw == "speaking" or "SPEAK" in mic_raw
+    if stop_hover or is_active_speaking:
+        stop_fill = img.copy()
+        cv2.rectangle(stop_fill, (stop_x, btn_y), (stop_x + btn_w, btn_y + btn_h), (25, 25, 95), -1)
+        cv2.addWeighted(stop_fill, 0.80, img, 0.20, 0, img)
+        stop_border = (50, 50, 255)
+        stop_text_col = col(C_WHITE, 1.0)
+    else:
+        stop_border = (40, 40, 160)
+        stop_text_col = (80, 80, 200)
+    cv2.rectangle(img, (stop_x, btn_y), (stop_x + btn_w, btn_y + btn_h), stop_border, 1, cv2.LINE_AA)
+    stop_label = "STOP"
+    stl_w, _ = cv2.getTextSize(stop_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
+    cv2.putText(img, stop_label, (stop_x + (btn_w - stl_w) // 2, btn_y + text_y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX, btn_fs, stop_text_col, 1, cv2.LINE_AA)
+
+    # 11. Button 3: [✕ CLR] (Clear Input)
     clr_hover = _INPUT_STATE.get("clear_hover", False)
     if clr_hover:
         clr_fill = img.copy()
-        cv2.rectangle(clr_fill, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), (35, 45, 95), -1)
-        cv2.addWeighted(clr_fill, 0.7, img, 0.3, 0, img)
+        cv2.rectangle(clr_fill, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), (40, 45, 95), -1)
+        cv2.addWeighted(clr_fill, 0.70, img, 0.30, 0, img)
         clr_border = col((100, 140, 255), 1.0)
         clr_text_col = col(C_WHITE, 1.0)
     else:
         clr_border = col(C_MID, 0.55)
         clr_text_col = col(C_TEXT, 0.75)
     cv2.rectangle(img, (clr_x, btn_y), (clr_x + btn_w, btn_y + btn_h), clr_border, 1, cv2.LINE_AA)
-    clr_label = "✕ CLR"
+    clr_label = "CLR"
     cl_w, _ = cv2.getTextSize(clr_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, clr_label, (clr_x + (btn_w - cl_w) // 2, btn_y + int(21 * K)),
+    cv2.putText(img, clr_label, (clr_x + (btn_w - cl_w) // 2, btn_y + text_y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX, btn_fs, clr_text_col, 1, cv2.LINE_AA)
 
-    # 10. Polished [SEND] Button
+    # 12. Button 4: [► SEND] (Execute Command)
     send_hover = _INPUT_STATE.get("send_hover", False)
     if send_hover:
         send_fill = img.copy()
@@ -963,26 +1082,30 @@ def draw_holographic_input_bar(img, W, H, K, now):
         send_border = col(C_BRIGHT, 1.0)
         send_text_col = col(C_WHITE, 1.0)
     else:
-        send_border = col(C_BRIGHT, 0.75) if _INPUT_STATE["active"] else col(C_MID, 0.65)
+        send_border = col(C_BRIGHT, 0.85) if _INPUT_STATE["active"] else col(C_MID, 0.65)
         send_text_col = col(C_BRIGHT, 0.95)
     cv2.rectangle(img, (send_x, btn_y), (send_x + btn_w, btn_y + btn_h), send_border, 1, cv2.LINE_AA)
     if send_hover:
         cv2.rectangle(img, (send_x + 2, btn_y + 2), (send_x + btn_w - 2, btn_y + btn_h - 2), col(C_WHITE, 0.6), 1, cv2.LINE_AA)
-    send_label = "► SEND"
+    send_label = "SEND"
     sl_w, _ = cv2.getTextSize(send_label, cv2.FONT_HERSHEY_SIMPLEX, btn_fs, 1)[0]
-    cv2.putText(img, send_label, (send_x + (btn_w - sl_w) // 2, btn_y + int(21 * K)),
+    cv2.putText(img, send_label, (send_x + (btn_w - sl_w) // 2, btn_y + text_y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX, btn_fs, send_text_col, 1, cv2.LINE_AA)
 
 
 def on_mouse(ev, x, y, flags, _):
     # Check input bar and button interactions
-    if _INPUT_STATE["send_rect"] and _INPUT_STATE["clear_rect"] and _INPUT_STATE["bar_rect"]:
+    if _INPUT_STATE.get("bar_rect") and _INPUT_STATE.get("send_rect") and _INPUT_STATE.get("clear_rect"):
         sx, sy, sw, sh = _INPUT_STATE["send_rect"]
         cx, cy, cw, ch = _INPUT_STATE["clear_rect"]
+        stx, sty, stw, sth = _INPUT_STATE["stop_rect"]
+        tkx, tky, tkw, tkh = _INPUT_STATE["talk_rect"]
         bx, by, bw, bh = _INPUT_STATE["bar_rect"]
 
         _INPUT_STATE["send_hover"] = (sx <= x <= sx + sw and sy <= y <= sy + sh)
         _INPUT_STATE["clear_hover"] = (cx <= x <= cx + cw and cy <= y <= cy + ch)
+        _INPUT_STATE["stop_hover"] = (stx <= x <= stx + stw and sty <= y <= sty + sth)
+        _INPUT_STATE["talk_hover"] = (tkx <= x <= tkx + tkw and tky <= y <= tky + tkh)
 
         if ev == cv2.EVENT_LBUTTONDOWN:
             if _INPUT_STATE["send_hover"]:
@@ -990,6 +1113,18 @@ def on_mouse(ev, x, y, flags, _):
                 return
             elif _INPUT_STATE["clear_hover"]:
                 _INPUT_STATE["text"] = ""
+                return
+            elif _INPUT_STATE["stop_hover"]:
+                try:
+                    flag_p = os.path.join(tempfile.gettempdir(), "vision_interrupt.flag")
+                    with open(flag_p, "w", encoding="utf-8") as ff:
+                        ff.write("1")
+                except Exception:
+                    pass
+                dispatch_hud_action("__STOP__")
+                return
+            elif _INPUT_STATE["talk_hover"]:
+                dispatch_hud_action("__ACTIVATE_VOICE__")
                 return
             elif bx <= x <= bx + bw and by <= y <= by + bh:
                 _INPUT_STATE["active"] = True
@@ -1223,8 +1358,18 @@ def main():
         sync_render_size()
 
         if _INPUT_STATE["active"]:
-            if k == 13:  # Enter -> Submit text query
-                submit_text_input(_INPUT_STATE["text"])
+            if k == 13:  # Enter
+                is_shift = False
+                if sys.platform == "win32":
+                    try:
+                        import ctypes
+                        is_shift = bool(ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+                    except Exception:
+                        pass
+                if is_shift:
+                    _INPUT_STATE["text"] += "\n"
+                else:
+                    submit_text_input(_INPUT_STATE["text"])
             elif k == 8:   # Backspace -> Delete character
                 _INPUT_STATE["text"] = _INPUT_STATE["text"][:-1]
             elif k == 27:  # Esc -> Deactivate input bar

@@ -23,10 +23,15 @@ def _suppress_bad_image_dialogs():
     if sys.platform == "win32":
         try:
             import ctypes
+            from ctypes import wintypes
+            # SEM_FAILCRITICALERRORS (0x0001) | SEM_NOGPFAULTERRORBOX (0x0002) | SEM_NOOPENFILEERRORBOX (0x8000)
             flags = 0x0001 | 0x0002 | 0x8000
             ctypes.windll.kernel32.SetErrorMode(flags)
             try:
-                ctypes.windll.kernel32.SetThreadErrorMode(flags, None)
+                ctypes.windll.kernel32.SetThreadErrorMode.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+                ctypes.windll.kernel32.SetThreadErrorMode.restype = wintypes.BOOL
+                old_m = wintypes.DWORD()
+                ctypes.windll.kernel32.SetThreadErrorMode(flags, ctypes.byref(old_m))
             except Exception:
                 pass
         except Exception:
@@ -225,6 +230,19 @@ class HandTracker:
             self.status = "CAMERA ACTIVE"
             return False
         try:
+            # Safely probe libmediapipe.dll via ctypes with error suppression before calling MediaPipe C++ runtime.
+            # If Windows 11 Smart App Control or Code Integrity blocks it (0xc0e90002), it raises an OSError
+            # here cleanly without ever triggering an OS "Bad Image" modal popup!
+            dll_p = os.path.join(os.path.dirname(mp_module.__file__), "tasks", "c", "libmediapipe.dll")
+            if os.path.isfile(dll_p):
+                try:
+                    import ctypes
+                    ctypes.CDLL(dll_p)
+                except Exception as probe_err:
+                    print(f"[HandTracking] MediaPipe native library restricted by Windows Security ({probe_err}). Gracefully defaulting to camera/mouse tracking.")
+                    self.status = "CAMERA ACTIVE"
+                    return False
+
             from mediapipe.tasks import python as mp_python
             from mediapipe.tasks.python import vision
             model = ensure_model_exists()
